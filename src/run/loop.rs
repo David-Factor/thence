@@ -20,7 +20,7 @@ pub struct LoopInput {
 }
 
 pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<String> {
-    let provider = provider_for(&input.cfg.agent)?;
+    let provider = provider_for(&input.cfg.agent, &input.cfg.agent_cmd)?;
 
     loop {
         let events = store.list_events(&input.run_id)?;

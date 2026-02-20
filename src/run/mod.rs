@@ -8,12 +8,13 @@ use crate::events::store::{EventStore, RunRow};
 use crate::events::{EventRow, NewEvent};
 use crate::logging::ndjson;
 use crate::plan::{review_loop, sanity, translator, validate};
-use crate::workers::provider::{provider_for, AgentRequest};
+use crate::workers::provider::{provider_for, AgentCommandConfig, AgentRequest};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -36,6 +37,10 @@ pub struct RunCommand {
     pub trust_plan_checks: bool,
     pub interactive: bool,
     pub debug_dump_spl: Option<PathBuf>,
+    pub agent_cmd: Option<String>,
+    pub agent_cmd_codex: Option<String>,
+    pub agent_cmd_claude: Option<String>,
+    pub agent_cmd_opencode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +63,8 @@ pub struct RunConfig {
     pub max_attempts: i64,
     #[serde(default = "default_check_timeout_secs")]
     pub check_timeout_secs: u64,
+    #[serde(default)]
+    pub agent_cmd: AgentCommandConfig,
 }
 
 fn default_state_db() -> PathBuf {
@@ -123,6 +130,12 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         interactive: cmd.interactive,
         max_attempts: 3,
         check_timeout_secs: 10 * 60,
+        agent_cmd: AgentCommandConfig {
+            default_cmd: cmd.agent_cmd,
+            codex: cmd.agent_cmd_codex,
+            claude: cmd.agent_cmd_claude,
+            opencode: cmd.agent_cmd_opencode,
+        },
     };
 
     store.create_run(&RunRow {
@@ -362,12 +375,12 @@ pub fn answer_question(
             None,
         )?;
 
-        let is_spec_review_question = question_id.starts_with("spec-q-")
-            && question_id != "spec-q-translate"
-            && question_id != "spec-q-validate";
-        if is_spec_review_question {
+        let is_spec_question = question_id.starts_with("spec-q-");
+        if is_spec_question {
             let events_after = store.list_events(run_id)?;
-            let has_spec_approval = events_after.iter().any(|ev| ev.event_type == "spec_approved");
+            let has_spec_approval = events_after
+                .iter()
+                .any(|ev| ev.event_type == "spec_approved");
             let has_open_spec_questions = events_after.iter().any(|ev| {
                 ev.event_type == "spec_question_opened"
                     && ev
@@ -416,6 +429,110 @@ pub fn resume_run(run_id: &str, state_db: Option<PathBuf>) -> Result<()> {
         None,
     )?;
     continue_run(&store, run_id, None)
+}
+
+pub fn inspect_run(run_id: &str, state_db: Option<PathBuf>) -> Result<()> {
+    let store = EventStore::open(&state_db.unwrap_or_else(default_state_db))?;
+    let run = store
+        .get_run(run_id)?
+        .ok_or_else(|| anyhow!("run not found: {run_id}"))?;
+    let events = store.list_events(run_id)?;
+    let state = RunProjection::replay(&events);
+    let repo_root = repo_root_for_plan(Path::new(&run.plan_path))?;
+    let run_dir = run_artifact_dir(&repo_root, run_id);
+
+    println!("run_id: {}", run.id);
+    println!("status: {}", run.status);
+    println!("plan_path: {}", run.plan_path);
+    println!("spl_path: {}", run.spl_plan_path);
+    println!("artifacts_dir: {}", run_dir.display());
+    println!(
+        "state: spec_approved={} checks_approved={} paused={} terminal={}",
+        state.spec_approved,
+        state.checks_approved,
+        state.paused,
+        state.terminal.as_deref().unwrap_or("none")
+    );
+    let phase = if state.terminal.is_some() {
+        "terminal"
+    } else if !state.open_questions.is_empty() {
+        "paused_for_question"
+    } else if !state.spec_approved {
+        "spec_gate"
+    } else if !state.checks_approved {
+        "checks_gate"
+    } else if state.tasks.values().any(|t| t.claimed) {
+        "implementation_loop"
+    } else {
+        "scheduler_idle"
+    };
+    println!("phase: {phase}");
+
+    if let Some(task) = state.tasks.values().find(|t| t.claimed) {
+        println!("current: task={} attempt={}", task.id, task.latest_attempt);
+    }
+
+    if !state.open_questions.is_empty() {
+        println!("open_questions:");
+        for (id, q) in &state.open_questions {
+            println!("  - {}: {}", id, q);
+        }
+    }
+
+    let mut latest_findings = BTreeMap::<String, (i64, String)>::new();
+    for ev in events.iter().rev() {
+        if ev.event_type != "review_found_issues" {
+            continue;
+        }
+        let Some(task_id) = ev.task_id.as_ref() else {
+            continue;
+        };
+        if latest_findings.contains_key(task_id) {
+            continue;
+        }
+        let reason = ev
+            .payload_json
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("review findings")
+            .to_string();
+        latest_findings.insert(task_id.clone(), (ev.attempt.unwrap_or(0), reason));
+    }
+    if !latest_findings.is_empty() {
+        println!("latest_findings:");
+        for (task, (attempt, reason)) in latest_findings {
+            println!("  - task={} attempt={} reason={}", task, attempt, reason);
+        }
+    }
+
+    let mut seen_attempts = std::collections::HashSet::<(String, i64)>::new();
+    let mut attempts = Vec::<(String, i64)>::new();
+    for ev in events.iter().rev() {
+        if let (Some(task_id), Some(attempt)) = (ev.task_id.as_ref(), ev.attempt) {
+            let key = (task_id.clone(), attempt);
+            if seen_attempts.insert(key.clone()) {
+                attempts.push(key);
+            }
+        }
+        if attempts.len() >= 8 {
+            break;
+        }
+    }
+
+    if !attempts.is_empty() {
+        println!("attempt_artifacts:");
+        for (task_id, attempt) in attempts {
+            println!("  - task={} attempt={}", task_id, attempt);
+            for role in ["implementer", "reviewer"] {
+                let artifacts = discover_attempt_artifacts(&run_dir, &task_id, attempt, role)?;
+                for path in artifacts {
+                    println!("      {}: {}", role, path.display());
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Result<()> {
@@ -821,7 +938,7 @@ fn propose_checks_and_pause(
     translated: &crate::plan::translator::TranslatedPlan,
     ndjson_log: Option<&Path>,
 ) -> Result<()> {
-    let provider = provider_for(&cfg.agent)?;
+    let provider = provider_for(&cfg.agent, &cfg.agent_cmd)?;
     let prompt = packet::build_checks_proposer_prompt(
         repo_root,
         plan_file,
@@ -961,6 +1078,43 @@ fn resolve_resume_run_id(store: &EventStore, explicit: Option<&str>) -> Result<S
             candidates.join(", ")
         ),
     }
+}
+
+fn discover_attempt_artifacts(
+    run_dir: &Path,
+    task_id: &str,
+    attempt: i64,
+    role: &str,
+) -> Result<Vec<PathBuf>> {
+    let root = run_dir
+        .join("worktrees")
+        .join("whence")
+        .join(task_id)
+        .join(format!("v{attempt}"));
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let prefix = format!("{role}_attempt{attempt}");
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let ty = entry.file_type()?;
+            if ty.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(&prefix) {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 pub(crate) fn sha256_hex(input: &str) -> String {
