@@ -1,1 +1,0 @@
-{"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"},"minItems":1},"rationale":{"type":"string"}},"required":["commands","rationale"],"additionalProperties":false}

@@ -1,1 +1,0 @@
-{"type":"object","properties":{"approved":{"type":"boolean"},"findings":{"type":"array","items":{"type":"string"}}},"required":["approved","findings"],"additionalProperties":false}
