@@ -1,0 +1,364 @@
+use std::fs;
+use tempfile::tempdir;
+use whence::events::store::{EventStore, RunRow};
+use whence::events::NewEvent;
+use whence::run::{answer_question, execute_run, list_questions, resume_run, RunCommand};
+
+fn test_run_id(prefix: &str) -> String {
+    format!("{}-{}", prefix, uuid::Uuid::new_v4())
+}
+
+#[test]
+fn end_to_end_happy_path_completes() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(
+        &plan_path,
+        "- [ ] task-a: implement feature\n- [ ] task-b: verify behavior | deps=task-a",
+    )
+    .unwrap();
+
+    let run_id = test_run_id("happy");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.event_type == "task_closed")
+            .count(),
+        2
+    );
+    assert!(!events.iter().any(|e| e.event_type == "run_failed"));
+}
+
+#[test]
+fn ambiguity_pauses_and_can_resume() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: This spec is ambiguous ???").unwrap();
+
+    let run_id = test_run_id("paused");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("paused"));
+
+    list_questions(&run_id, Some(db_path.clone())).unwrap();
+    answer_question(&run_id, "spec-q-1", "Clarified", Some(db_path.clone())).unwrap();
+    resume_run(&run_id, Some(db_path.clone())).unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| e.event_type == "run_paused"));
+    assert!(events.iter().any(|e| e.event_type == "run_resumed"));
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+}
+
+#[test]
+fn dedupe_key_prevents_duplicate_event() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("state.db");
+    let store = EventStore::open(&db_path).unwrap();
+
+    let run_id = test_run_id("dedupe");
+    store
+        .create_run(&RunRow {
+            id: run_id.clone(),
+            plan_path: "plan.md".to_string(),
+            plan_sha256: "abc".to_string(),
+            spl_plan_path: "plan.spl".to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            status: "running".to_string(),
+            config_json: serde_json::json!({}),
+        })
+        .unwrap();
+
+    let ev = NewEvent {
+        event_type: "task_registered".to_string(),
+        task_id: Some("t1".to_string()),
+        actor_role: None,
+        actor_id: None,
+        attempt: None,
+        payload_json: serde_json::json!({"task_id": "t1"}),
+        dedupe_key: Some("task_registered:t1".to_string()),
+    };
+
+    let first = store.append_event(&run_id, &ev).unwrap();
+    let second = store.append_event(&run_id, &ev).unwrap();
+    assert!(first.is_some());
+    assert!(second.is_none());
+}
+
+#[test]
+fn review_question_uses_returned_question_id() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: ").unwrap();
+
+    let run_id = test_run_id("question-id");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("paused"));
+
+    answer_question(&run_id, "spec-q-2", "filled objective", Some(db_path)).unwrap();
+}
+
+#[test]
+fn implementer_nonzero_exit_blocks_review_and_close() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: break build [impl-fail]").unwrap();
+
+    let run_id = test_run_id("impl-fail");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| e.event_type == "run_failed"));
+    assert!(events
+        .iter()
+        .any(|e| e.event_type == "task_failed_terminal"));
+    assert!(events.iter().all(|e| e.event_type != "review_requested"));
+    assert!(events.iter().all(|e| e.event_type != "task_closed"));
+}
+
+#[test]
+fn reviewer_missing_output_fails_closed() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(
+        &plan_path,
+        "- [ ] task-a: reviewer output absent [missing-review-output]",
+    )
+    .unwrap();
+
+    let run_id = test_run_id("review-missing");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| e.event_type == "review_requested"));
+    assert!(events.iter().any(|e| e.event_type == "review_found_issues"));
+    assert!(events.iter().all(|e| e.event_type != "review_approved"));
+    assert!(events.iter().all(|e| e.event_type != "task_closed"));
+}
+
+#[test]
+fn duplicate_sanitized_task_ids_pause_translation() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: one\n- [ ] task_a: two").unwrap();
+
+    let run_id = test_run_id("dup-id");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("translation failure"));
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events
+        .iter()
+        .any(|e| e.event_type == "spec_question_opened"));
+    assert!(events.iter().any(|e| {
+        e.event_type == "human_input_requested"
+            && e.payload_json.get("question_id").and_then(|v| v.as_str())
+                == Some("spec-q-translate")
+    }));
+}
+
+#[test]
+fn resume_with_open_question_uses_real_question_id() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: ").unwrap();
+
+    let run_id = test_run_id("resume-qid");
+    let _ = execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+    });
+
+    let err = resume_run(&run_id, Some(db_path.clone())).unwrap_err();
+    assert!(format!("{err}").contains("paused"));
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    let latest_human_input_requested = events
+        .iter()
+        .rev()
+        .find(|e| e.event_type == "human_input_requested")
+        .expect("expected human_input_requested");
+    assert_eq!(
+        latest_human_input_requested
+            .payload_json
+            .get("question_id")
+            .and_then(|v| v.as_str()),
+        Some("spec-q-2")
+    );
+}
+
+#[test]
+fn checks_gate_pauses_then_accept_resume() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: implement feature").unwrap();
+
+    let run_id = test_run_id("checks-gate");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path.clone(),
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: None,
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("checks approval"));
+
+    answer_question(&run_id, "checks-q-1", "accept", Some(db_path.clone())).unwrap();
+    resume_run(&run_id, Some(db_path.clone())).unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| e.event_type == "checks_proposed"));
+    assert!(events.iter().any(|e| e.event_type == "checks_approved"));
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+
+    let checks_file = plan_path
+        .parent()
+        .unwrap()
+        .join(".whence")
+        .join("checks.json");
+    assert!(checks_file.exists());
+}
