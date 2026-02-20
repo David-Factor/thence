@@ -43,6 +43,14 @@ enum Commands {
         interactive: bool,
         #[arg(long)]
         debug_dump_spl: Option<PathBuf>,
+        #[arg(long)]
+        agent_cmd: Option<String>,
+        #[arg(long)]
+        agent_cmd_codex: Option<String>,
+        #[arg(long)]
+        agent_cmd_claude: Option<String>,
+        #[arg(long)]
+        agent_cmd_opencode: Option<String>,
     },
     Questions {
         #[arg(long)]
@@ -61,6 +69,12 @@ enum Commands {
         state_db: Option<PathBuf>,
     },
     Resume {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        state_db: Option<PathBuf>,
+    },
+    Inspect {
         #[arg(long)]
         run: String,
         #[arg(long)]
@@ -87,6 +101,10 @@ pub fn run() -> Result<()> {
             trust_plan_checks,
             interactive,
             debug_dump_spl,
+            agent_cmd,
+            agent_cmd_codex,
+            agent_cmd_claude,
+            agent_cmd_opencode,
         } => {
             let cfg = run::RunCommand {
                 plan_file,
@@ -104,6 +122,10 @@ pub fn run() -> Result<()> {
                 trust_plan_checks,
                 interactive,
                 debug_dump_spl,
+                agent_cmd,
+                agent_cmd_codex,
+                agent_cmd_claude,
+                agent_cmd_opencode,
             };
             run::execute_run(cfg)
         }
@@ -121,5 +143,9 @@ pub fn run() -> Result<()> {
             run: run_id,
             state_db,
         } => run::resume_run(&run_id, state_db),
+        Commands::Inspect {
+            run: run_id,
+            state_db,
+        } => run::inspect_run(&run_id, state_db),
     }
 }

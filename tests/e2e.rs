@@ -36,6 +36,10 @@ fn end_to_end_happy_path_completes() {
         trust_plan_checks: false,
         interactive: false,
         debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -76,6 +80,10 @@ fn ambiguity_pauses_and_can_resume() {
         trust_plan_checks: false,
         interactive: false,
         debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("paused"));
@@ -150,6 +158,10 @@ fn review_question_uses_returned_question_id() {
         trust_plan_checks: false,
         interactive: false,
         debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("paused"));
@@ -181,6 +193,10 @@ fn implementer_nonzero_exit_blocks_review_and_close() {
         trust_plan_checks: false,
         interactive: false,
         debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -222,6 +238,10 @@ fn reviewer_missing_output_fails_closed() {
         trust_plan_checks: false,
         interactive: false,
         debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -257,6 +277,10 @@ fn duplicate_sanitized_task_ids_pause_translation() {
         trust_plan_checks: false,
         interactive: false,
         debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("translation failure"));
@@ -297,6 +321,10 @@ fn resume_with_open_question_uses_real_question_id() {
         trust_plan_checks: false,
         interactive: false,
         debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
     });
 
     let err = resume_run(&run_id, Some(db_path.clone())).unwrap_err();
@@ -342,6 +370,10 @@ fn checks_gate_pauses_then_accept_resume() {
         trust_plan_checks: false,
         interactive: false,
         debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("checks approval"));
@@ -361,4 +393,173 @@ fn checks_gate_pauses_then_accept_resume() {
         .join(".whence")
         .join("checks.json");
     assert!(checks_file.exists());
+}
+
+#[test]
+fn translation_pause_resume_regenerates_spl_and_completes() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: one\n- [ ] task_a: two").unwrap();
+
+    let run_id = test_run_id("translate-resume");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path.clone(),
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("translation failure"));
+
+    // Fix plan after pause and resume same run.
+    fs::write(
+        &plan_path,
+        "- [ ] task-a: one\n- [ ] task-b: two | deps=task-a",
+    )
+    .unwrap();
+    answer_question(
+        &run_id,
+        "spec-q-translate",
+        "fixed plan",
+        Some(db_path.clone()),
+    )
+    .unwrap();
+    resume_run(&run_id, Some(db_path.clone())).unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let run = store.get_run(&run_id).unwrap().expect("run row");
+    let events = store.list_events(&run_id).unwrap();
+    assert!(std::path::Path::new(&run.spl_plan_path).exists());
+    assert!(events.iter().any(|e| e.event_type == "plan_translated"));
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+}
+
+#[test]
+fn translate_answer_does_not_bypass_spec_review_gate() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: one\n- [ ] task_a: two").unwrap();
+
+    let run_id = test_run_id("translate-no-bypass");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path.clone(),
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("translation failure"));
+
+    // Fix translation issue, but keep ambiguity marker that should be caught by review gate.
+    fs::write(
+        &plan_path,
+        "- [ ] task-a: unclear behavior ???\n- [ ] task-b: follow up | deps=task-a",
+    )
+    .unwrap();
+    answer_question(&run_id, "spec-q-translate", "retry translation", Some(db_path.clone()))
+        .unwrap();
+    let err = resume_run(&run_id, Some(db_path.clone())).unwrap_err();
+    assert!(format!("{err}").contains("paused"));
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| {
+        e.event_type == "spec_question_opened"
+            && e.payload_json.get("question_id").and_then(|v| v.as_str()) == Some("spec-q-1")
+    }));
+    assert!(!events.iter().any(|e| e.event_type == "spec_approved"));
+    assert!(!events.iter().any(|e| e.event_type == "checks_approved"));
+    assert!(!events.iter().any(|e| e.event_type == "task_registered"));
+}
+
+#[test]
+fn subprocess_invalid_reviewer_output_fails_closed() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    let agent_path = tmp.path().join("agent.sh");
+    fs::write(&plan_path, "- [ ] task-a: run reviewer invalid output").unwrap();
+    fs::write(
+        &agent_path,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+case "${WHENCE_ROLE:-}" in
+  implementer) echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}" ;;
+  reviewer) echo '{' > "${WHENCE_RESULT_FILE}" ;;
+  checks-proposer) echo '{"commands":["true"],"rationale":"ok"}' > "${WHENCE_RESULT_FILE}" ;;
+  *) echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}" ;;
+esac
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&agent_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&agent_path, perms).unwrap();
+    }
+
+    let run_id = test_run_id("invalid-reviewer-json");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+        agent_cmd: Some(format!("bash {}", agent_path.display())),
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
+    })
+    .unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| e.event_type == "review_requested"));
+    assert!(events.iter().any(|e| e.event_type == "review_found_issues"));
+    assert!(events.iter().all(|e| e.event_type != "review_approved"));
+    assert!(events.iter().all(|e| e.event_type != "task_closed"));
 }
