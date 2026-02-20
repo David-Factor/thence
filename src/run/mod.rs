@@ -375,8 +375,8 @@ pub fn answer_question(
             None,
         )?;
 
-        let is_spec_question = question_id.starts_with("spec-q-");
-        if is_spec_question {
+        let is_spec_review_question = is_spec_review_question_id(question_id);
+        if is_spec_review_question {
             let events_after = store.list_events(run_id)?;
             let has_spec_approval = events_after
                 .iter()
@@ -564,6 +564,29 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
         pause_for_question(store, run_id, first_question_id, log.as_deref())?;
         bail!("run paused; unresolved questions remain")
     }
+
+    if !state.spec_approved {
+        rerun_spec_gate_on_resume(store, run_id, &plan_path, log.as_deref())?;
+        let events_after_spec = store.list_events(run_id)?;
+        let state_after_spec = RunProjection::replay(&events_after_spec);
+        if !state_after_spec.open_questions.is_empty() {
+            let mut ids = state_after_spec
+                .open_questions
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            ids.sort();
+            let first_question_id = ids
+                .first()
+                .map(|s| s.as_str())
+                .ok_or_else(|| anyhow!("unresolved questions present but no IDs found"))?;
+            pause_for_question(store, run_id, first_question_id, log.as_deref())?;
+            bail!("run paused; unresolved questions remain")
+        }
+    }
+
+    let events = store.list_events(run_id)?;
+    let state = RunProjection::replay(&events);
 
     if !state.checks_approved {
         resolve_checks_configuration_on_resume(
@@ -782,6 +805,110 @@ fn resolve_checks_configuration(
     propose_checks_and_pause(
         store, run_id, cfg, repo_root, plan_file, markdown, translated, ndjson_log,
     )
+}
+
+fn rerun_spec_gate_on_resume(
+    store: &EventStore,
+    run_id: &str,
+    plan_file: &Path,
+    ndjson_log: Option<&Path>,
+) -> Result<()> {
+    let markdown = fs::read_to_string(plan_file)
+        .with_context(|| format!("read plan file {}", plan_file.display()))?;
+    let translated = match translator::translate_markdown_to_spl(&markdown, &default_checks()) {
+        Ok(t) => t,
+        Err(err) => {
+            let qid = "spec-q-translate";
+            append_event(
+                store,
+                run_id,
+                &NewEvent::simple(
+                    "spec_question_opened",
+                    json!({"question_id": qid, "question": format!("Plan translation failed: {err}")}),
+                ),
+                ndjson_log,
+            )?;
+            pause_for_question(store, run_id, qid, ndjson_log)?;
+            bail!("run paused due to translation failure")
+        }
+    };
+
+    let run = store
+        .get_run(run_id)?
+        .ok_or_else(|| anyhow!("run not found: {run_id}"))?;
+    if let Some(parent) = Path::new(&run.spl_plan_path).parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create SPL parent dir {}", parent.display()))?;
+    }
+    fs::write(&run.spl_plan_path, &translated.spl)
+        .with_context(|| format!("write regenerated SPL {}", run.spl_plan_path))?;
+    append_event(
+        store,
+        run_id,
+        &NewEvent::simple(
+            "plan_translated",
+            json!({"spl_path": run.spl_plan_path, "task_count": translated.tasks.len(), "source": "resume_spec_gate"}),
+        ),
+        ndjson_log,
+    )?;
+
+    if let Err(err) =
+        validate::validate_spl(&translated.spl).and_then(|_| sanity::run_sanity_checks(&translated))
+    {
+        let qid = "spec-q-validate";
+        append_event(
+            store,
+            run_id,
+            &NewEvent::simple(
+                "spec_question_opened",
+                json!({"question_id": qid, "question": format!("Plan generation failed: {err}")}),
+            ),
+            ndjson_log,
+        )?;
+        pause_for_question(store, run_id, qid, ndjson_log)?;
+        bail!("run paused due to invalid translated plan")
+    }
+    append_event(
+        store,
+        run_id,
+        &NewEvent::simple(
+            "plan_validated",
+            json!({"ok": true, "source": "resume_spec_gate"}),
+        ),
+        ndjson_log,
+    )?;
+
+    match review_loop::review_spec(&markdown, &translated) {
+        review_loop::SpecReviewOutcome::Approved => {
+            append_event(
+                store,
+                run_id,
+                &NewEvent::simple(
+                    "spec_approved",
+                    json!({"approved": true, "source": "resume_spec_gate"}),
+                ),
+                ndjson_log,
+            )?;
+        }
+        review_loop::SpecReviewOutcome::Question {
+            question_id,
+            question,
+        } => {
+            append_event(
+                store,
+                run_id,
+                &NewEvent::simple(
+                    "spec_question_opened",
+                    json!({"question_id": question_id, "question": question}),
+                ),
+                ndjson_log,
+            )?;
+            pause_for_question(store, run_id, &question_id, ndjson_log)?;
+            bail!("run paused awaiting spec clarification")
+        }
+    }
+
+    Ok(())
 }
 
 fn resolve_checks_configuration_on_resume(
@@ -1078,6 +1205,12 @@ fn resolve_resume_run_id(store: &EventStore, explicit: Option<&str>) -> Result<S
             candidates.join(", ")
         ),
     }
+}
+
+fn is_spec_review_question_id(question_id: &str) -> bool {
+    question_id.starts_with("spec-q-")
+        && question_id != "spec-q-translate"
+        && question_id != "spec-q-validate"
 }
 
 fn discover_attempt_artifacts(

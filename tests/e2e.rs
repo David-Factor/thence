@@ -451,6 +451,60 @@ fn translation_pause_resume_regenerates_spl_and_completes() {
 }
 
 #[test]
+fn translate_answer_does_not_bypass_spec_review_gate() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: one\n- [ ] task_a: two").unwrap();
+
+    let run_id = test_run_id("translate-no-bypass");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path.clone(),
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("translation failure"));
+
+    // Fix translation issue, but keep ambiguity marker that should be caught by review gate.
+    fs::write(
+        &plan_path,
+        "- [ ] task-a: unclear behavior ???\n- [ ] task-b: follow up | deps=task-a",
+    )
+    .unwrap();
+    answer_question(&run_id, "spec-q-translate", "retry translation", Some(db_path.clone()))
+        .unwrap();
+    let err = resume_run(&run_id, Some(db_path.clone())).unwrap_err();
+    assert!(format!("{err}").contains("paused"));
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| {
+        e.event_type == "spec_question_opened"
+            && e.payload_json.get("question_id").and_then(|v| v.as_str()) == Some("spec-q-1")
+    }));
+    assert!(!events.iter().any(|e| e.event_type == "spec_approved"));
+    assert!(!events.iter().any(|e| e.event_type == "checks_approved"));
+    assert!(!events.iter().any(|e| e.event_type == "task_registered"));
+}
+
+#[test]
 fn subprocess_invalid_reviewer_output_fails_closed() {
     let tmp = tempdir().unwrap();
     let plan_path = tmp.path().join("plan.md");
