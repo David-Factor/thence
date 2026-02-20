@@ -2,7 +2,7 @@ use crate::events::projector::RunProjection;
 use anyhow::{Context, Result};
 use spindle_core::literal::Literal;
 use spindle_core::mode::Mode;
-use spindle_core::query::{query, QueryStatus};
+use spindle_core::query::{QueryStatus, query};
 use spindle_core::temporal::Temporal;
 use spindle_parser::parse_spl;
 use std::collections::HashSet;

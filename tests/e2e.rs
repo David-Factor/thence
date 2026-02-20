@@ -1,8 +1,8 @@
 use std::fs;
 use tempfile::tempdir;
-use whence::events::store::{EventStore, RunRow};
 use whence::events::NewEvent;
-use whence::run::{answer_question, execute_run, list_questions, resume_run, RunCommand};
+use whence::events::store::{EventStore, RunRow};
+use whence::run::{RunCommand, answer_question, execute_run, list_questions, resume_run};
 
 fn test_run_id(prefix: &str) -> String {
     format!("{}-{}", prefix, uuid::Uuid::new_v4())
@@ -203,9 +203,11 @@ fn implementer_nonzero_exit_blocks_review_and_close() {
     let store = EventStore::open(&db_path).unwrap();
     let events = store.list_events(&run_id).unwrap();
     assert!(events.iter().any(|e| e.event_type == "run_failed"));
-    assert!(events
-        .iter()
-        .any(|e| e.event_type == "task_failed_terminal"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event_type == "task_failed_terminal")
+    );
     assert!(events.iter().all(|e| e.event_type != "review_requested"));
     assert!(events.iter().all(|e| e.event_type != "task_closed"));
 }
@@ -287,9 +289,11 @@ fn duplicate_sanitized_task_ids_pause_translation() {
 
     let store = EventStore::open(&db_path).unwrap();
     let events = store.list_events(&run_id).unwrap();
-    assert!(events
-        .iter()
-        .any(|e| e.event_type == "spec_question_opened"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event_type == "spec_question_opened")
+    );
     assert!(events.iter().any(|e| {
         e.event_type == "human_input_requested"
             && e.payload_json.get("question_id").and_then(|v| v.as_str())
@@ -488,8 +492,13 @@ fn translate_answer_does_not_bypass_spec_review_gate() {
         "- [ ] task-a: unclear behavior ???\n- [ ] task-b: follow up | deps=task-a",
     )
     .unwrap();
-    answer_question(&run_id, "spec-q-translate", "retry translation", Some(db_path.clone()))
-        .unwrap();
+    answer_question(
+        &run_id,
+        "spec-q-translate",
+        "retry translation",
+        Some(db_path.clone()),
+    )
+    .unwrap();
     let err = resume_run(&run_id, Some(db_path.clone())).unwrap_err();
     assert!(format!("{err}").contains("paused"));
 

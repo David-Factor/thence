@@ -1,11 +1,11 @@
 use crate::checks;
+use crate::events::NewEvent;
 use crate::events::projector::RunProjection;
 use crate::events::store::EventStore;
-use crate::events::NewEvent;
 use crate::policy;
-use crate::run::{append_event, packet, scheduler, RunConfig};
+use crate::run::{RunConfig, append_event, packet, scheduler};
 use crate::vcs;
-use crate::workers::provider::{provider_for, AgentRequest};
+use crate::workers::provider::{AgentRequest, provider_for};
 use anyhow::Result;
 use serde_json::json;
 use std::path::PathBuf;

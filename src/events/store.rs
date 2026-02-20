@@ -1,7 +1,7 @@
-use crate::events::{schema, EventRow, NewEvent};
+use crate::events::{EventRow, NewEvent, schema};
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::path::Path;
 
@@ -146,17 +146,17 @@ impl EventStore {
         let events = self.list_events(run_id)?;
         let mut opened = Vec::new();
         for ev in &events {
-            if ev.event_type == "spec_question_opened" || ev.event_type == "checks_question_opened"
+            if (ev.event_type == "spec_question_opened"
+                || ev.event_type == "checks_question_opened")
+                && let Some(id) = ev.payload_json.get("question_id").and_then(|v| v.as_str())
             {
-                if let Some(id) = ev.payload_json.get("question_id").and_then(|v| v.as_str()) {
-                    let text = ev
-                        .payload_json
-                        .get("question")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    opened.push((id.to_string(), text));
-                }
+                let text = ev
+                    .payload_json
+                    .get("question")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                opened.push((id.to_string(), text));
             }
         }
         let resolved: std::collections::HashSet<String> = events

@@ -1,5 +1,5 @@
-use whence::events::projector::RunProjection;
 use whence::events::EventRow;
+use whence::events::projector::RunProjection;
 
 #[test]
 fn attempt_interrupted_clears_claimed_flag() {

@@ -1,6 +1,6 @@
 use crate::events::projector::RunProjection;
 use crate::events::{EventRow, NewEvent};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 const TERMINAL_EVENTS: [&str; 3] = ["run_completed", "run_failed", "run_cancelled"];
 
@@ -11,13 +11,12 @@ pub fn validate_transition(history: &[EventRow], next: &NewEvent) -> Result<()> 
         bail!("invalid transition: run already terminal")
     }
 
-    if TERMINAL_EVENTS.contains(&next.event_type.as_str()) {
-        if history
+    if TERMINAL_EVENTS.contains(&next.event_type.as_str())
+        && history
             .iter()
             .any(|ev| TERMINAL_EVENTS.contains(&ev.event_type.as_str()))
-        {
-            bail!("invalid transition: run terminal event already exists")
-        }
+    {
+        bail!("invalid transition: run terminal event already exists")
     }
 
     if (next.event_type == "task_claimed" || next.event_type == "merge_succeeded")

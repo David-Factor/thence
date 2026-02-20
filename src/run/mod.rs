@@ -8,8 +8,8 @@ use crate::events::store::{EventStore, RunRow};
 use crate::events::{EventRow, NewEvent};
 use crate::logging::ndjson;
 use crate::plan::{review_loop, sanity, translator, validate};
-use crate::workers::provider::{provider_for, AgentCommandConfig, AgentRequest};
-use anyhow::{anyhow, bail, Context, Result};
+use crate::workers::provider::{AgentCommandConfig, AgentRequest, provider_for};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -65,6 +65,14 @@ pub struct RunConfig {
     pub check_timeout_secs: u64,
     #[serde(default)]
     pub agent_cmd: AgentCommandConfig,
+}
+
+struct ChecksResolutionInput<'a> {
+    repo_root: &'a Path,
+    plan_file: &'a Path,
+    markdown: &'a str,
+    translated: &'a translator::TranslatedPlan,
+    ndjson_log: Option<&'a Path>,
 }
 
 fn default_state_db() -> PathBuf {
@@ -249,16 +257,14 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         }
     }
 
-    resolve_checks_configuration(
-        &store,
-        &run_id,
-        &cfg,
-        &repo_root,
-        &cmd.plan_file,
-        &markdown,
-        &translated,
-        cmd.log.as_deref(),
-    )?;
+    let checks_input = ChecksResolutionInput {
+        repo_root: &repo_root,
+        plan_file: &cmd.plan_file,
+        markdown: &markdown,
+        translated: &translated,
+        ndjson_log: cmd.log.as_deref(),
+    };
+    resolve_checks_configuration(&store, &run_id, &cfg, &checks_input)?;
 
     for t in &translated.tasks {
         append_event(
@@ -716,10 +722,10 @@ fn append_attempt_interrupted_for_orphans(
     let events = store.list_events(run_id)?;
     let mut claimed_attempts = Vec::<(String, i64)>::new();
     for ev in &events {
-        if ev.event_type == "task_claimed" {
-            if let (Some(task_id), Some(attempt)) = (ev.task_id.clone(), ev.attempt) {
-                claimed_attempts.push((task_id, attempt));
-            }
+        if ev.event_type == "task_claimed"
+            && let (Some(task_id), Some(attempt)) = (ev.task_id.clone(), ev.attempt)
+        {
+            claimed_attempts.push((task_id, attempt));
         }
     }
 
@@ -762,11 +768,7 @@ fn resolve_checks_configuration(
     store: &EventStore,
     run_id: &str,
     cfg: &RunConfig,
-    repo_root: &Path,
-    plan_file: &Path,
-    markdown: &str,
-    translated: &crate::plan::translator::TranslatedPlan,
-    ndjson_log: Option<&Path>,
+    input: &ChecksResolutionInput<'_>,
 ) -> Result<()> {
     if cfg.checks_from_cli {
         append_event(
@@ -776,13 +778,13 @@ fn resolve_checks_configuration(
                 "checks_approved",
                 json!({"commands": cfg.checks, "source": "cli"}),
             ),
-            ndjson_log,
+            input.ndjson_log,
         )?;
         return Ok(());
     }
 
     if cfg.use_checks_file && !cfg.reconfigure_checks {
-        match crate::checks::config::load_checks_file(repo_root) {
+        match crate::checks::config::load_checks_file(input.repo_root) {
             Ok(Some(file_checks)) => {
                 append_event(
                     store,
@@ -791,7 +793,7 @@ fn resolve_checks_configuration(
                         "checks_approved",
                         json!({"commands": file_checks, "source": "file"}),
                     ),
-                    ndjson_log,
+                    input.ndjson_log,
                 )?;
                 return Ok(());
             }
@@ -802,9 +804,7 @@ fn resolve_checks_configuration(
         }
     }
 
-    propose_checks_and_pause(
-        store, run_id, cfg, repo_root, plan_file, markdown, translated, ndjson_log,
-    )
+    propose_checks_and_pause(store, run_id, cfg, input)
 }
 
 fn rerun_spec_gate_on_resume(
@@ -958,16 +958,14 @@ fn resolve_checks_configuration_on_resume(
     let translated =
         crate::plan::translator::translate_markdown_to_spl(&markdown, &default_checks())
             .context("translate plan for checks proposal on resume")?;
-    propose_checks_and_pause(
-        store,
-        run_id,
-        cfg,
+    let checks_input = ChecksResolutionInput {
         repo_root,
         plan_file,
-        &markdown,
-        &translated,
+        markdown: &markdown,
+        translated: &translated,
         ndjson_log,
-    )
+    };
+    propose_checks_and_pause(store, run_id, cfg, &checks_input)
 }
 
 fn regenerate_plan_spl_if_missing(
@@ -1059,23 +1057,19 @@ fn propose_checks_and_pause(
     store: &EventStore,
     run_id: &str,
     cfg: &RunConfig,
-    repo_root: &Path,
-    plan_file: &Path,
-    markdown: &str,
-    translated: &crate::plan::translator::TranslatedPlan,
-    ndjson_log: Option<&Path>,
+    input: &ChecksResolutionInput<'_>,
 ) -> Result<()> {
     let provider = provider_for(&cfg.agent, &cfg.agent_cmd)?;
     let prompt = packet::build_checks_proposer_prompt(
-        repo_root,
-        plan_file,
-        markdown,
-        translated,
-        read_optional_file(&repo_root.join("AGENTS.md")),
-        read_optional_file(&repo_root.join("CLAUDE.md")),
+        input.repo_root,
+        input.plan_file,
+        input.markdown,
+        input.translated,
+        read_optional_file(&input.repo_root.join("AGENTS.md")),
+        read_optional_file(&input.repo_root.join("CLAUDE.md")),
     );
 
-    let worktree = run_artifact_dir(repo_root, run_id)
+    let worktree = run_artifact_dir(input.repo_root, run_id)
         .join("checks-proposal")
         .join("attempt1");
     fs::create_dir_all(&worktree)?;
@@ -1108,7 +1102,7 @@ fn propose_checks_and_pause(
             "checks_proposed",
             json!({"commands": proposed, "source": "agent_proposal"}),
         ),
-        ndjson_log,
+        input.ndjson_log,
     )?;
 
     let qid = "checks-q-1";
@@ -1123,14 +1117,14 @@ fn propose_checks_and_pause(
                 "proposed_commands": proposed
             }),
         ),
-        ndjson_log,
+        input.ndjson_log,
     )?;
 
     eprintln!("Proposed checks:");
     for (i, cmd) in proposed.iter().enumerate() {
         eprintln!("  {}. {}", i + 1, cmd);
     }
-    pause_for_question(store, run_id, qid, ndjson_log)?;
+    pause_for_question(store, run_id, qid, input.ndjson_log)?;
     bail!("run paused awaiting checks approval")
 }
 
@@ -1168,9 +1162,9 @@ fn repo_root_for_plan(plan_file: &Path) -> Result<PathBuf> {
     let p = plan_file
         .canonicalize()
         .with_context(|| format!("resolve plan path {}", plan_file.display()))?;
-    Ok(p.parent()
+    p.parent()
         .map(Path::to_path_buf)
-        .ok_or_else(|| anyhow!("cannot derive repo root from {}", p.display()))?)
+        .ok_or_else(|| anyhow!("cannot derive repo root from {}", p.display()))
 }
 
 pub(crate) fn default_checks() -> Vec<String> {
@@ -1178,14 +1172,12 @@ pub(crate) fn default_checks() -> Vec<String> {
 }
 
 pub(crate) fn parse_checks(raw: Option<&str>) -> Vec<String> {
-    let checks = raw
-        .unwrap_or("")
+    raw.unwrap_or("")
         .split(';')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    checks
+        .collect::<Vec<_>>()
 }
 
 pub(crate) fn run_artifact_dir(base: &Path, run_id: &str) -> PathBuf {

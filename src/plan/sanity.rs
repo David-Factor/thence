@@ -1,5 +1,5 @@
 use crate::plan::translator::TranslatedPlan;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 pub fn run_sanity_checks(plan: &TranslatedPlan) -> Result<()> {
     if plan.tasks.is_empty() {

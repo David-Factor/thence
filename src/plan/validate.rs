@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use spindle_core::pipeline::{prepare, PrepareOptions};
+use spindle_core::pipeline::{PrepareOptions, prepare};
 use spindle_parser::parse_spl;
 
 pub fn validate_spl(spl: &str) -> Result<()> {

@@ -1,5 +1,5 @@
-use crate::events::projector::{RunProjection, TaskProjection};
 use crate::events::EventRow;
+use crate::events::projector::{RunProjection, TaskProjection};
 use crate::plan::translator::TranslatedPlan;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
