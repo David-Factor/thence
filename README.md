@@ -1,156 +1,162 @@
 # whence
 
-`whence` is an event-sourced supervisor for executing free-form Markdown specs with implementer/reviewer loops, checks gating, and resumable runs.
+`whence` is an experiment in long-horizon, hands-off LLM execution.
+
+It is explicitly a derivative of [hence](https://codeberg.org/anuna/hence), and directly builds on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and defeasible logic orchestration.
+
+## Why This Exists
+
+This project comes from a workflow shift:
+
+- Models are now strong enough to be more hands-off, if each step is grounded and verified.
+- In practice, the hard part is no longer raw coding alone, it is spec quality plus verification quality.
+- The verification loop can vary by project, but usually combines LLM review plus deterministic checks.
+- `whence` is an outer-loop experiment for that pattern: take a rich spec, run execution/review loops, and keep progress grounded.
+
+## Core Idea
+
+You provide a free-form Markdown spec.
+
+`whence` then:
+
+1. translates the spec into an internal plan,
+2. runs implementer/reviewer attempts,
+3. gates closure with checks,
+4. records everything in an event log so runs are resumable and auditable.
+
+Important UX choice:
+
+- SPL/defeasible logic is used under the hood, but is intentionally not required from the user.
+- You interact through specs and simple CLI commands, not through logic syntax.
+
+## Relationship to hence
+
+`whence` is not trying to replace `hence`.
+
+It is a focused experiment that borrows the reasoning foundation and applies it to a different user experience:
+
+- no plan language exposure for end users,
+- free-form spec in, supervised execution out,
+- explicit grounding loops for real coding workflow.
 
 ## Install
 
-### One-line install (recommended)
+### Public repo one-liner
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
 ```
 
-For private repos, use authenticated GitHub CLI:
+### Private repo one-liner (authenticated)
 
 ```bash
 bash <(gh api "repos/David-Factor/whence/contents/install.sh?ref=main" --jq '.content' | base64 --decode)
 ```
 
 Defaults:
+
 - installs to `~/.local/bin/whence`
-- downloads latest GitHub release for your OS/arch
+- installs latest release for your OS/arch
 
 Useful overrides:
 
 ```bash
-# Install a specific release tag
 VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
-
-# Install to a different directory
 INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
 ```
 
-If needed, add install dir to `PATH`:
+If needed:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-## How To Use
+## Quickstart
 
 ### 1. Write a spec
 
-`whence` accepts free-form Markdown and asks the plan-translator agent to produce SPL + a task graph.
-
-Example:
+Example `spec.md`:
 
 ```markdown
-# Feature: Tiny Changelog Helper
+# Feature: OCR harness validation loop
 
-Build a utility that parses markdown changelog text and extracts a version section.
-Add tests for missing versions and malformed headers.
-Add a README usage example.
+Build a harness that can validate OCR extraction quality against expected fixtures.
+Add deterministic checks for pass/fail thresholds.
+Add docs showing how to run the harness against new OCR changes.
 ```
 
 ### 2. Start a run
 
 ```bash
-cargo run --bin whence -- run plan.md --agent codex --checks "cargo check;cargo test"
+whence run spec.md --agent codex --checks "cargo check;cargo test"
 ```
+
+### 3. Respond to pauses (if any)
+
+```bash
+whence questions --run <run-id>
+whence answer --run <run-id> --question <question-id> --text "..."
+whence resume --run <run-id>
+```
+
+### 4. Inspect status and artifacts
+
+```bash
+whence inspect --run <run-id>
+```
+
+## Verification and Grounding Model
+
+`whence` is built around two layers:
+
+- Inner loop: implementer + reviewer + deterministic checks.
+- Outer loop: event-sourced supervision that tracks progress, findings, retries, and terminal outcomes.
+
+This is the central experiment: can a strong outer loop make longer-horizon autonomous execution safer and more useful in day-to-day workflow?
+
+## Runtime Behavior You Should Know
 
 Checks resolution order:
-1. `--checks` (if provided)
-2. `.whence/checks.json` (if present and valid)
-3. checks proposal gate (run pauses and asks for approval)
 
-Useful timeout flags:
-- `--attempt-timeout-secs <n>`: hard timeout for implementer/reviewer attempts (default `2700`).
+1. `--checks` CLI value
+2. `.whence/checks.json`
+3. checks proposal gate (run pauses for approval)
 
-### 3. Answer questions and resume
+Crash safety:
 
-When a run pauses for clarification or checks approval:
+- In-flight attempts write lease files under:
+  - `<repo>/.whence/runs/<run-id>/leases/<task-id>/attempt<k>/{implementer,reviewer}.json`
+- On resume:
+  - fresh active lease blocks resume (prevents double supervisors),
+  - stale lease gets interrupted and retried safely.
 
-```bash
-cargo run --bin whence -- questions --run <run-id>
-cargo run --bin whence -- answer --run <run-id> --question <question-id> --text "..."
-cargo run --bin whence -- resume --run <run-id>
-```
+Useful flags:
 
-### 4. Inspect state and artifacts
+- `--attempt-timeout-secs <n>` hard timeout for implementer/reviewer attempts
+- `--agent-cmd`, `--agent-cmd-codex`, `--agent-cmd-claude`, `--agent-cmd-opencode` for external adapters
 
-```bash
-cargo run --bin whence -- inspect --run <run-id>
-```
+Bundled adapter:
 
-This reports phase/state, open questions, latest findings, and per-attempt artifact paths.
+- `scripts/agent-codex.sh`
 
-### 5. Crash Lease Recovery
+## Development
 
-Each in-flight attempt writes a lease file under:
-
-`<repo>/.whence/runs/<run-id>/leases/<task-id>/attempt<k>/{implementer,reviewer}.json`
-
-On `resume`, `whence`:
-- refuses to continue if a lease is still fresh (protects against double supervisors),
-- marks stale orphan attempts interrupted and retries safely,
-- fail-closes attempts that exceed retry budget.
-
-## Provider Command Overrides
-
-Use external agent commands without environment variable setup:
-
-```bash
-cargo run --bin whence -- run plan.md \
-  --agent codex \
-  --agent-cmd-codex "bash scripts/agent-codex.sh"
-```
-
-Available flags:
-- `--agent-cmd`
-- `--agent-cmd-codex`
-- `--agent-cmd-claude`
-- `--agent-cmd-opencode`
-
-### Bundled Codex Adapter
-
-This repo ships a maintained adapter at `scripts/agent-codex.sh`.
-
-It expects `codex` on `PATH`, reads `WHENCE_PROMPT_FILE` and optional
-`WHENCE_CAPSULE_FILE`, and writes structured JSON to `WHENCE_RESULT_FILE`.
-Each role uses a strict output schema so malformed outputs fail closed in the
-supervisor loop.
-
-## Reasoning Layer (Defeasible Logic)
-
-`whence` composes:
-- static supervisor policy rules,
-- translated plan facts/rules, and
-- projected lifecycle facts from the event log.
-
-That combined SPL theory is evaluated through embedded `spindle-rust` components (`spindle-core` and `spindle-parser`) to derive `claimable`, `closable`, and `merge-ready` states. This architecture keeps orchestration logic explicit and extensible, while leveraging non-monotonic/defeasible reasoning machinery under the hood as policy complexity grows.
-
-## Acknowledgements
-
-`whence` takes strong direction from [hence](https://codeberg.org/anuna/hence), especially around LLM-supervisor workflow shape and SPL-centered policy modeling.
-
-`whence` also directly embeds [spindle-rust](https://codeberg.org/anuna/spindle-rust) as its reasoning backend.
-
-## Build
+Build:
 
 ```bash
 cargo build
 ```
 
-## Test
+Test:
 
 ```bash
 cargo test
 ```
 
-## State and Artifacts
+State:
 
-- Default state DB: `$XDG_STATE_HOME/whence/state.db` (or `$HOME/.local/state/whence/state.db`)
-- Run artifacts: `<repo>/.whence/runs/<run-id>/`
+- default DB: `$XDG_STATE_HOME/whence/state.db` (or `$HOME/.local/state/whence/state.db`)
+- artifacts: `<repo>/.whence/runs/<run-id>/`
 
 ## License
 
