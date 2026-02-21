@@ -29,6 +29,41 @@ Important UX choice:
 - SPL/defeasible logic is used under the hood, but is intentionally not required from the user.
 - You interact through specs and simple CLI commands, not through logic syntax.
 
+Mental model:
+
+```text
++-----------+
+|  spec.md  |
++-----------+
+      |
+      v
++------------------------+
+|       whence run       |
+|    (supervisor loop)   |
++------------------------+
+      |
+      v
++-------------+    +----------+    +--------+
+| implementer | -> | reviewer | -> | checks |
++-------------+    +----------+    +--------+
+      ^                                   |
+      |___________________________________|
+             findings + retries
+
+      |
+      v
++------------------------+
+| event log + artifacts  |
++------------------------+
+      |
+      v
++------------------------+
+| resume / inspect       |
++------------------------+
+```
+
+`SPL + defeasible reasoning runs internally; users interact via specs + CLI only.`
+
 ## Relationship to hence
 
 `whence` is not trying to replace `hence`.
@@ -41,16 +76,10 @@ It is a focused experiment that borrows the reasoning foundation and applies it 
 
 ## Install
 
-### Public repo one-liner
+### One-line install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
-```
-
-### Private repo one-liner (authenticated)
-
-```bash
-bash <(gh api "repos/David-Factor/whence/contents/install.sh?ref=main" --jq '.content' | base64 --decode)
 ```
 
 Defaults:
@@ -65,10 +94,22 @@ VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/
 INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
 ```
 
+For private forks/repos, use authenticated GitHub CLI:
+
+```bash
+bash <(gh api "repos/<owner>/<repo>/contents/install.sh?ref=main" --jq '.content' | base64 --decode)
+```
+
 If needed:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
+```
+
+Verify install:
+
+```bash
+whence --help
 ```
 
 ## Quickstart
