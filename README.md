@@ -1,137 +1,52 @@
 # thence
 
-`thence` is an experiment in long-horizon LLM-assisted execution.
+`thence` is an experiment in long-horizon, spec-driven coding supervision.
 
-It is explicitly a derivative of [hence](https://codeberg.org/anuna/hence), building on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and defeasible logic orchestration.
+It is a derivative of [hence](https://codeberg.org/anuna/hence), building on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and the broader direction of defeasible logic + LLM workflows pioneered by [Hugo O'Connor](https://www.anuna.io/).
 
-## Why This Exists
+## What You Need
 
-This project comes from a workflow shift:
+- A repo with a markdown spec (`spec.md`)
+- A coding agent command (for real implementation/review work)
+- Optional prompt context files: `AGENTS.md`, `CLAUDE.md`
 
-- Models are increasingly good at implementation when each step is grounded and verified.
-- The bottleneck often shifts from raw coding to spec quality and verification quality.
-- Verification is usually hybrid: LLM review plus deterministic checks.
-- `thence` is an outer-loop experiment for that pattern.
+Notes:
 
-## Core Idea
-
-You provide a free-form Markdown spec.
-
-`thence` then:
-
-1. translates the spec into an internal plan,
-2. runs implementer and reviewer attempts,
-3. gates closure with deterministic checks,
-4. records facts and events so runs are resumable and auditable.
-
-Under the hood, assertions/facts are appended as attempts progress. Policy reasoning uses those facts to decide what should happen next (claim, retry, pause, close, or fail).
-
-Mental model:
-
-```text
-+-----------+
-|  spec.md  |
-+-----------+
-      |
-      v
-+------------------------+
-|       thence run       |
-|    (supervisor loop)   |
-+------------------------+
-      |
-      v
-+-------------+    +----------+    +--------+
-| implementer | -> | reviewer | -> | checks |
-+-------------+    +----------+    +--------+
-      ^                                   |
-      |___________________________________|
-             findings + retries
-
-      |
-      v
-+------------------------+
-| event log + artifacts  |
-+------------------------+
-      |
-      v
-+------------------------+
-| resume / inspect       |
-+------------------------+
-```
-
-## Relationship to hence
-
-`thence` is not trying to replace `hence`.
-
-It is a focused experiment exploring ideas on top of [Hugo O'Connor](https://www.anuna.io/)'s work in `hence` and `spindle-rust`, especially the seam of defeasible logic systems paired with LLM workflows.
+- Built-in providers are `codex`, `claude`, and `opencode`.
+- Without a configured agent command, provider behavior is stubbed (useful for testing, not real coding output).
 
 ## Install
-
-### One-line install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David-Factor/thence/main/install.sh | bash
 ```
 
-This installs the latest release for your OS/arch to `~/.local/bin/thence`.
-
-If needed:
+Verify:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Verify install:
-
-```bash
+thence --version
 thence --help
 ```
 
-## CLI at a glance
+## How To Run
 
-Output from `thence --help` (v0.1.3):
-
-```text
-Spec-driven supervisor for long-horizon coding runs
-
-Usage: thence <COMMAND>
-
-Commands:
-  run         Start a new supervised run from a markdown spec
-  questions   List unresolved questions for a run
-  answer      Answer a question opened during a run
-  resume      Resume a paused or interrupted run
-  inspect     Inspect current state for a run
-  completion  Generate shell completion script
-  man         Generate a man page
-  help        Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help (see more with '--help')
-  -V, --version  Print version
-```
-
-## Quickstart
-
-### 1. Write a spec
-
-Example `spec.md`:
+1. Write a spec file.
 
 ```markdown
 # Feature: OCR harness validation loop
 
-Build a harness that can validate OCR extraction quality against expected fixtures.
+Build a harness that validates OCR extraction quality against expected fixtures.
 Add deterministic checks for pass/fail thresholds.
 Add docs showing how to run the harness against new OCR changes.
 ```
 
-### 2. Start a run
+2. Run thence.
 
 ```bash
-thence run spec.md --agent codex --checks "cargo check;cargo test"
+thence run spec.md --agent codex --agent-cmd "./scripts/agent-codex.sh" --checks "cargo check;cargo test"
 ```
 
-### 3. If paused, answer and resume
+3. If paused, answer and resume.
 
 ```bash
 thence questions --run <run-id>
@@ -139,207 +54,85 @@ thence answer --run <run-id> --question <question-id> --text "..."
 thence resume --run <run-id>
 ```
 
-### 4. Inspect status and artifacts
+4. Inspect current state.
 
 ```bash
 thence inspect --run <run-id>
 ```
 
-## CLI Help and Discovery
-
-`thence` follows a command-first CLI model:
-
-- `thence --help` for top-level overview
-- `thence <command> --help` for command-specific guidance and examples
-- `thence --version` for installed version
-
-The CLI help style is intentionally aligned with [CLIG](https://clig.dev/): concise default guidance, detailed per-command help, examples, and discoverable support links.
-
-Generate shell completions:
-
-```bash
-# bash
-thence completion bash > ~/.local/share/bash-completion/completions/thence
-
-# zsh
-thence completion zsh > ~/.zsh/completions/_thence
-
-# fish
-thence completion fish > ~/.config/fish/completions/thence.fish
-```
-
-Generate a man page:
-
-```bash
-thence man > thence.1
-```
-
-or write directly:
-
-```bash
-thence man --output docs/thence.1
-```
-
-## Configuration
-
-### Checks
+## Configuration That Matters
 
 Checks resolution order:
 
 1. `--checks` CLI value
 2. `.thence/checks.json`
-3. checks proposal gate (run pauses for approval)
+3. Checks proposal gate (run pauses for approval)
 
-Common checks options:
+High-impact flags:
 
-- `thence run spec.md --checks "cargo check;cargo test"`
-- `thence run spec.md --reconfigure-checks`
-- `thence run spec.md --no-checks-file`
+- `--checks "cmd1;cmd2"`
+- `--reconfigure-checks`
+- `--no-checks-file`
+- `--workers <n>`
+- `--reviewers <n>`
+- `--attempt-timeout-secs <secs>`
+- `--state-db <path>`
+- `--log <path>`
+- `--trust-plan-checks`
+- `--allow-partial-completion`
 
-Other useful run flags:
+Agent command config:
 
-- `--workers <n>` implementer worker count
-- `--reviewers <n>` reviewer worker count
-- `--attempt-timeout-secs <n>` timeout for implementer/reviewer attempts
-- `--state-db <path>` custom run state DB path
-- `--run-id <id>` set an explicit run id
-- `--log <path>` write NDJSON event log
-- `--trust-plan-checks` use per-task checks from translated plan
-- `--allow-partial-completion` allow successful tasks to close even if some fail
+- Per-run: `--agent-cmd`, `--agent-cmd-codex`, `--agent-cmd-claude`, `--agent-cmd-opencode`
+- Env vars: `THENCE_AGENT_CMD`, `THENCE_AGENT_CMD_CODEX`, `THENCE_AGENT_CMD_CLAUDE`, `THENCE_AGENT_CMD_OPENCODE`
 
-Minimal `.thence/checks.json` example:
+## How Context Is Shared Today
 
-```json
-{
-  "version": 1,
-  "commands": ["cargo check", "cargo test"],
-  "updated_at": "2026-02-21T00:00:00Z",
-  "source": "human_approved"
-}
-```
+- The spec is frozen per run at: `<repo>/.thence/runs/<run-id>/spec.md`
+- Plan translation gets full spec markdown plus optional `AGENTS.md` / `CLAUDE.md` content
+- Implementer/reviewer get task-scoped context through per-attempt capsules (objective, acceptance, findings, checks, references)
+- Capsule path is passed via `THENCE_CAPSULE_FILE`
 
-`AGENTS.md` and `CLAUDE.md` are used as prompt context for plan translation and checks proposal. They are not a direct checks configuration source.
+Important current behavior:
 
-### Agent Providers
+- Implementer/reviewer do not currently get the full spec injected directly as a dedicated prompt field.
+- The full spec is available on disk under run artifacts, but task execution context is intentionally task-scoped.
 
-Supported `--agent` values:
+## Worktrees and Merge Behavior
 
-- `codex` (default)
-- `claude`
-- `opencode`
+Worktrees:
 
-Configure agent command execution with flags:
+- Per-attempt worktrees are created under:
+  - `<repo>/.thence/runs/<run-id>/worktrees/thence/<task-id>/v<attempt>/<worker-id>`
+- Worktrees are currently retained for audit/debug; automatic cleanup is not implemented yet.
 
-- `--agent-cmd` default command for all providers
-- `--agent-cmd-codex` override for `codex`
-- `--agent-cmd-claude` override for `claude`
-- `--agent-cmd-opencode` override for `opencode`
+Merge behavior:
 
-Or environment variables:
+- thence emits logical merge-queue events (`merge_succeeded`, `merge_conflict`) and only closes tasks after merge success.
+- Current merge behavior is lightweight/simulated in code, not a full VCS merge queue implementation.
 
-- `THENCE_AGENT_CMD`
-- `THENCE_AGENT_CMD_CODEX`
-- `THENCE_AGENT_CMD_CLAUDE`
-- `THENCE_AGENT_CMD_OPENCODE`
-
-Custom adapter example:
+Manual cleanup (if needed):
 
 ```bash
-thence run spec.md --agent codex --agent-cmd "./scripts/agent-codex.sh"
+rm -rf .thence/runs/<run-id>/worktrees
 ```
 
-### Subprocess Adapter Contract
+## CLI Discovery
 
-When using `--agent-cmd*`, `thence` runs your command in the task worktree and sets:
+- `thence --help`
+- `thence <command> --help`
+- `thence completion <shell>`
+- `thence man --output docs/thence.1`
 
-- `THENCE_ROLE`
-- `THENCE_WORKTREE`
-- `THENCE_PROMPT_FILE`
-- `THENCE_RESULT_FILE`
-- `THENCE_TIMEOUT_SECS`
+This help style is intentionally aligned with [CLIG](https://clig.dev/): concise defaults, command-specific examples, and discoverable support paths.
 
-For implementer/reviewer attempts it also sets:
+## Roadmap
 
-- `THENCE_CAPSULE_FILE`
-- `THENCE_CAPSULE_SHA256`
-- `THENCE_CAPSULE_ROLE`
-
-Your adapter must write structured JSON to `THENCE_RESULT_FILE`:
-
-- `plan-translator`: `{ "spl": string, "tasks": [...] }`
-- `implementer`: `{ "submitted": true }`
-- `reviewer`: `{ "approved": boolean, "findings": string[] }`
-- `checks-proposer`: `{ "commands": string[], "rationale": string }`
-
-Bundled example adapter:
-
-- `scripts/agent-codex.sh`
-
-## Runtime Behavior
-
-### Pause/Resume Flow
-
-Runs pause for unresolved questions (for example, checks approval or spec clarification). Use:
-
-- `thence questions --run <run-id>`
-- `thence answer --run <run-id> --question <question-id> --text "..."`
-- `thence resume --run <run-id>`
-
-### Failure and Retry Semantics
-
-A task attempt can be retried when:
-
-- implementer exits non-zero,
-- implementer output is missing/invalid,
-- reviewer rejects with findings,
-- reviewer output is invalid,
-- deterministic checks fail or time out,
-- merge conflict reopens the task.
-
-A task is marked terminal-failed when max attempts are exhausted. A run fails when policy reaches unschedulable/blocked terminal state (unless partial completion is allowed with `--allow-partial-completion`).
-
-### Crash Safety and Leases
-
-In-flight attempts maintain lease files under:
-
-- `<repo>/.thence/runs/<run-id>/leases/<task-id>/attempt<k>/{implementer,reviewer}.json`
-
-On resume:
-
-- fresh active lease blocks resume to prevent double supervisors,
-- stale lease is marked interrupted and safely retried.
-
-### Artifact Layout
-
-Key runtime artifacts live under `<repo>/.thence/runs/<run-id>/`:
-
-```text
-spec.md
-plan.spl
-translated_plan.json
-capsules/<task-id>/attempt<k>/{implementer,reviewer}.json
-leases/<task-id>/attempt<k>/{implementer,reviewer}.json
-worktrees/
-```
-
-## Development
-
-Build:
-
-```bash
-cargo build
-```
-
-Test:
-
-```bash
-cargo test
-```
-
-State:
-
-- default DB: `$XDG_STATE_HOME/thence/state.db` (or `$HOME/.local/state/thence/state.db`)
-- run artifacts: `<repo>/.thence/runs/<run-id>/`
+- Richer policy/rules for more expressive dependency and parallel execution semantics
+- Hooks at key lifecycle points (attempt start/end, checks, merge outcomes)
+- Explicit full-spec reference in implementer/reviewer capsules
+- Real merge queue integration
+- Automatic run/worktree garbage collection policies
 
 ## License
 
