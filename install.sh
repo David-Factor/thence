@@ -2,7 +2,7 @@
 set -euo pipefail
 
 OWNER="${OWNER:-David-Factor}"
-REPO="${REPO:-whence}"
+REPO="${REPO:-thence}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${VERSION:-latest}"
 
