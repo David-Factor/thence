@@ -87,6 +87,30 @@ Verify install:
 thence --help
 ```
 
+## CLI at a glance
+
+Output from `thence --help` (v0.1.3):
+
+```text
+Spec-driven supervisor for long-horizon coding runs
+
+Usage: thence <COMMAND>
+
+Commands:
+  run         Start a new supervised run from a markdown spec
+  questions   List unresolved questions for a run
+  answer      Answer a question opened during a run
+  resume      Resume a paused or interrupted run
+  inspect     Inspect current state for a run
+  completion  Generate shell completion script
+  man         Generate a man page
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help (see more with '--help')
+  -V, --version  Print version
+```
+
 ## Quickstart
 
 ### 1. Write a spec
