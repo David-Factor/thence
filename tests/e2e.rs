@@ -35,6 +35,7 @@ fn end_to_end_happy_path_completes() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -83,6 +84,7 @@ fn prose_spec_translates_and_completes() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -120,6 +122,7 @@ fn ambiguity_pauses_and_can_resume() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -198,6 +201,7 @@ fn review_question_uses_returned_question_id() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -233,6 +237,7 @@ fn implementer_nonzero_exit_blocks_review_and_close() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -280,6 +285,7 @@ fn reviewer_missing_output_fails_closed() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -314,7 +320,11 @@ fn reviewer_findings_persist_and_reach_next_implementer_attempt() {
     let plan_path = tmp.path().join("plan.md");
     let db_path = tmp.path().join("state.db");
     let agent_path = tmp.path().join("agent.sh");
-    fs::write(&plan_path, "- [ ] task-a: implement feature with rework loop").unwrap();
+    fs::write(
+        &plan_path,
+        "- [ ] task-a: implement feature with rework loop",
+    )
+    .unwrap();
     fs::write(
         &agent_path,
         r#"#!/usr/bin/env bash
@@ -375,6 +385,7 @@ esac
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: Some(format!("bash {}", agent_path.display())),
         agent_cmd_codex: None,
@@ -396,14 +407,22 @@ esac
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    assert!(findings.iter().any(|v| v.as_str() == Some("must-handle-edge-case")));
+    assert!(
+        findings
+            .iter()
+            .any(|v| v.as_str() == Some("must-handle-edge-case"))
+    );
 
-    assert!(events
-        .iter()
-        .any(|e| e.event_type == "task_claimed" && e.attempt == Some(2)));
-    assert!(events
-        .iter()
-        .any(|e| e.event_type == "review_approved" && e.attempt == Some(2)));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event_type == "task_claimed" && e.attempt == Some(2))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event_type == "review_approved" && e.attempt == Some(2))
+    );
     assert!(events.iter().any(|e| e.event_type == "task_closed"));
     assert!(events.iter().any(|e| e.event_type == "run_completed"));
 
@@ -444,6 +463,7 @@ fn duplicate_sanitized_task_ids_pause_translation() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -490,6 +510,7 @@ fn resume_with_open_question_uses_real_question_id() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -539,6 +560,7 @@ fn checks_gate_pauses_then_accept_resume() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -588,6 +610,7 @@ fn translation_pause_resume_regenerates_spl_and_completes() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -643,6 +666,7 @@ fn resume_retranslates_when_translated_plan_missing() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -696,6 +720,7 @@ fn translate_answer_does_not_bypass_spec_review_gate() {
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: None,
         agent_cmd_codex: None,
@@ -781,6 +806,7 @@ esac
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
+        attempt_timeout_secs: None,
         debug_dump_spl: None,
         agent_cmd: Some(format!("bash {}", agent_path.display())),
         agent_cmd_codex: None,
@@ -795,4 +821,290 @@ esac
     assert!(events.iter().any(|e| e.event_type == "review_found_issues"));
     assert!(events.iter().all(|e| e.event_type != "review_approved"));
     assert!(events.iter().all(|e| e.event_type != "task_closed"));
+}
+
+#[test]
+fn resume_blocks_when_orphan_attempt_has_fresh_active_lease() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "Implement a tiny parser with tests.").unwrap();
+
+    let run_id = test_run_id("fresh-lease");
+    let run_dir = plan_path
+        .parent()
+        .unwrap()
+        .join(".whence")
+        .join("runs")
+        .join(&run_id);
+    fs::create_dir_all(&run_dir).unwrap();
+    let spl_path = run_dir.join("plan.spl");
+    fs::write(&spl_path, "(given (task task-a))\n(given (ready task-a))\n").unwrap();
+    fs::write(
+        run_dir.join("spec.md"),
+        "Implement a tiny parser with tests.",
+    )
+    .unwrap();
+    fs::write(
+        run_dir.join("translated_plan.json"),
+        r#"{
+  "tasks": [
+    {"id":"task-a","objective":"build parser","acceptance":"done","dependencies":[],"checks":["true"]}
+  ],
+  "spl": "(given (task task-a))\n(given (ready task-a))\n"
+}"#,
+    )
+    .unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    store
+        .create_run(&RunRow {
+            id: run_id.clone(),
+            plan_path: plan_path.display().to_string(),
+            plan_sha256: "abc".to_string(),
+            spl_plan_path: spl_path.display().to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            status: "running".to_string(),
+            config_json: serde_json::json!({
+                "agent": "codex",
+                "workers": 1,
+                "reviewers": 1,
+                "checks": ["true"],
+                "checks_from_cli": true,
+                "use_checks_file": false,
+                "reconfigure_checks": false,
+                "allow_partial_completion": false,
+                "trust_plan_checks": false,
+                "interactive": false,
+                "max_attempts": 3,
+                "check_timeout_secs": 60,
+                "attempt_timeout_secs": 120,
+                "agent_cmd": {}
+            }),
+        })
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent::simple("run_started", serde_json::json!({})),
+        )
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent::simple("spec_approved", serde_json::json!({"approved": true})),
+        )
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent::simple("checks_approved", serde_json::json!({"commands": ["true"]})),
+        )
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent {
+                event_type: "task_registered".to_string(),
+                task_id: Some("task-a".to_string()),
+                actor_role: None,
+                actor_id: None,
+                attempt: None,
+                payload_json: serde_json::json!({
+                    "task_id": "task-a",
+                    "objective": "build parser",
+                    "acceptance": "done",
+                    "dependencies": [],
+                    "checks": ["true"]
+                }),
+                dedupe_key: Some("task_registered:task-a".to_string()),
+            },
+        )
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent {
+                event_type: "task_claimed".to_string(),
+                task_id: Some("task-a".to_string()),
+                actor_role: Some("implementer".to_string()),
+                actor_id: Some("impl-1".to_string()),
+                attempt: Some(1),
+                payload_json: serde_json::json!({"attempt": 1}),
+                dedupe_key: None,
+            },
+        )
+        .unwrap();
+
+    let lease_path = run_dir
+        .join("leases")
+        .join("task-a")
+        .join("attempt1")
+        .join("implementer.json");
+    fs::create_dir_all(lease_path.parent().unwrap()).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    fs::write(
+        &lease_path,
+        serde_json::json!({
+            "version": 1,
+            "run_id": run_id.clone(),
+            "task_id": "task-a",
+            "attempt": 1,
+            "role": "implementer",
+            "owner_pid": std::process::id(),
+            "started_at": now,
+            "last_seen_at": chrono::Utc::now().to_rfc3339(),
+            "state": "active"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let err = resume_run(&run_id, Some(db_path)).unwrap_err();
+    assert!(format!("{err}").contains("active lease"));
+}
+
+#[test]
+fn resume_interrupts_stale_orphan_attempt_lease() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "Implement a tiny parser with tests.").unwrap();
+
+    let run_id = test_run_id("stale-lease");
+    let run_dir = plan_path
+        .parent()
+        .unwrap()
+        .join(".whence")
+        .join("runs")
+        .join(&run_id);
+    fs::create_dir_all(&run_dir).unwrap();
+    let spl_path = run_dir.join("plan.spl");
+    fs::write(&spl_path, "(given (task task-a))\n(given (ready task-a))\n").unwrap();
+    fs::write(
+        run_dir.join("spec.md"),
+        "Implement a tiny parser with tests.",
+    )
+    .unwrap();
+    fs::write(
+        run_dir.join("translated_plan.json"),
+        r#"{
+  "tasks": [
+    {"id":"task-a","objective":"build parser","acceptance":"done","dependencies":[],"checks":["true"]}
+  ],
+  "spl": "(given (task task-a))\n(given (ready task-a))\n"
+}"#,
+    )
+    .unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    store
+        .create_run(&RunRow {
+            id: run_id.clone(),
+            plan_path: plan_path.display().to_string(),
+            plan_sha256: "abc".to_string(),
+            spl_plan_path: spl_path.display().to_string(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            status: "running".to_string(),
+            config_json: serde_json::json!({
+                "agent": "codex",
+                "workers": 1,
+                "reviewers": 1,
+                "checks": ["true"],
+                "checks_from_cli": true,
+                "use_checks_file": false,
+                "reconfigure_checks": false,
+                "allow_partial_completion": false,
+                "trust_plan_checks": false,
+                "interactive": false,
+                "max_attempts": 3,
+                "check_timeout_secs": 60,
+                "attempt_timeout_secs": 120,
+                "agent_cmd": {}
+            }),
+        })
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent::simple("run_started", serde_json::json!({})),
+        )
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent::simple("spec_approved", serde_json::json!({"approved": true})),
+        )
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent::simple("checks_approved", serde_json::json!({"commands": ["true"]})),
+        )
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent {
+                event_type: "task_registered".to_string(),
+                task_id: Some("task-a".to_string()),
+                actor_role: None,
+                actor_id: None,
+                attempt: None,
+                payload_json: serde_json::json!({
+                    "task_id": "task-a",
+                    "objective": "build parser",
+                    "acceptance": "done",
+                    "dependencies": [],
+                    "checks": ["true"]
+                }),
+                dedupe_key: Some("task_registered:task-a".to_string()),
+            },
+        )
+        .unwrap();
+    store
+        .append_event(
+            &run_id,
+            &NewEvent {
+                event_type: "task_claimed".to_string(),
+                task_id: Some("task-a".to_string()),
+                actor_role: Some("implementer".to_string()),
+                actor_id: Some("impl-1".to_string()),
+                attempt: Some(1),
+                payload_json: serde_json::json!({"attempt": 1}),
+                dedupe_key: None,
+            },
+        )
+        .unwrap();
+
+    let lease_path = run_dir
+        .join("leases")
+        .join("task-a")
+        .join("attempt1")
+        .join("implementer.json");
+    fs::create_dir_all(lease_path.parent().unwrap()).unwrap();
+    let stale = (chrono::Utc::now() - chrono::Duration::seconds(300)).to_rfc3339();
+    fs::write(
+        &lease_path,
+        serde_json::json!({
+            "version": 1,
+            "run_id": run_id.clone(),
+            "task_id": "task-a",
+            "attempt": 1,
+            "role": "implementer",
+            "owner_pid": 999999,
+            "started_at": stale,
+            "last_seen_at": stale,
+            "state": "active"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    resume_run(&run_id, Some(db_path.clone())).unwrap();
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    assert!(events.iter().any(|e| e.event_type == "attempt_interrupted"));
 }

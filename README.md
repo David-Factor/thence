@@ -1,29 +1,21 @@
 # whence
 
-`whence` is an event-sourced supervisor for executing checklist-style plans with implementer/reviewer loops, checks gating, and resumable runs.
+`whence` is an event-sourced supervisor for executing free-form Markdown specs with implementer/reviewer loops, checks gating, and resumable runs.
 
 ## How To Use
 
-### 1. Write a plan
+### 1. Write a spec
 
-`whence` reads Markdown checklist items in this format:
-
-```markdown
-- [ ] task-id: objective | deps=task-a,task-b | checks=cargo check,cargo test
-```
-
-Notes:
-- `task-id:` is optional; if omitted, `task1`, `task2`, ... are generated.
-- `deps=...` is optional.
-- `checks=...` is optional and only applied when `--trust-plan-checks` is set.
+`whence` accepts free-form Markdown and asks the plan-translator agent to produce SPL + a task graph.
 
 Example:
 
 ```markdown
-- [ ] setup-db: create migration and schema
-- [ ] api-read: add read endpoint | deps=setup-db
-- [ ] api-write: add write endpoint | deps=setup-db
-- [ ] tests: cover read/write flows | deps=api-read,api-write
+# Feature: Tiny Changelog Helper
+
+Build a utility that parses markdown changelog text and extracts a version section.
+Add tests for missing versions and malformed headers.
+Add a README usage example.
 ```
 
 ### 2. Start a run
@@ -36,6 +28,9 @@ Checks resolution order:
 1. `--checks` (if provided)
 2. `.whence/checks.json` (if present and valid)
 3. checks proposal gate (run pauses and asks for approval)
+
+Useful timeout flags:
+- `--attempt-timeout-secs <n>`: hard timeout for implementer/reviewer attempts (default `2700`).
 
 ### 3. Answer questions and resume
 
@@ -54,6 +49,17 @@ cargo run --bin whence -- inspect --run <run-id>
 ```
 
 This reports phase/state, open questions, latest findings, and per-attempt artifact paths.
+
+### 5. Crash Lease Recovery
+
+Each in-flight attempt writes a lease file under:
+
+`<repo>/.whence/runs/<run-id>/leases/<task-id>/attempt<k>/{implementer,reviewer}.json`
+
+On `resume`, `whence`:
+- refuses to continue if a lease is still fresh (protects against double supervisors),
+- marks stale orphan attempts interrupted and retries safely,
+- fail-closes attempts that exceed retry budget.
 
 ## Provider Command Overrides
 

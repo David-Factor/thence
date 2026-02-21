@@ -42,6 +42,8 @@ enum Commands {
         #[arg(long)]
         interactive: bool,
         #[arg(long)]
+        attempt_timeout_secs: Option<u64>,
+        #[arg(long)]
         debug_dump_spl: Option<PathBuf>,
         #[arg(long)]
         agent_cmd: Option<String>,
@@ -100,6 +102,7 @@ pub fn run() -> Result<()> {
             allow_partial_completion,
             trust_plan_checks,
             interactive,
+            attempt_timeout_secs,
             debug_dump_spl,
             agent_cmd,
             agent_cmd_codex,
@@ -121,6 +124,7 @@ pub fn run() -> Result<()> {
                 allow_partial_completion,
                 trust_plan_checks,
                 interactive,
+                attempt_timeout_secs,
                 debug_dump_spl,
                 agent_cmd,
                 agent_cmd_codex,

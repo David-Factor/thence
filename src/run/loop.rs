@@ -3,10 +3,11 @@ use crate::events::NewEvent;
 use crate::events::projector::RunProjection;
 use crate::events::store::EventStore;
 use crate::policy;
+use crate::run::lease::{self, LeaseTicker};
 use crate::run::{RunConfig, append_event, packet, run_artifact_dir, scheduler, sha256_hex};
 use crate::vcs;
-use crate::workers::provider::{AgentRequest, provider_for};
-use anyhow::Result;
+use crate::workers::provider::{AgentProvider, AgentRequest, AgentResult, provider_for};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
@@ -94,29 +95,38 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
             )?;
             let implementer_capsule_file = implementer_capsule_path.display().to_string();
 
-            let implementer_res = provider.run(AgentRequest {
-                role: "implementer".to_string(),
-                task_id: task_id.clone(),
+            let (implementer_res, implementer_lease_path) = run_with_attempt_lease(
+                &*provider,
+                AgentRequest {
+                    role: "implementer".to_string(),
+                    task_id: task_id.clone(),
+                    attempt,
+                    worktree_path: worktree.clone(),
+                    prompt: json!({
+                        "role": "implementer",
+                        "capsule_file": implementer_capsule_file,
+                        "critical": {
+                            "task_id": task_id,
+                            "attempt": attempt,
+                            "objective": task.objective,
+                            "acceptance": task.acceptance
+                        }
+                    })
+                    .to_string(),
+                    env: capsule_env(
+                        &implementer_capsule_path,
+                        &implementer_capsule_sha,
+                        "implementer",
+                    ),
+                    timeout: Duration::from_secs(input.cfg.attempt_timeout_secs),
+                },
+                &input.base_dir,
+                &input.run_id,
+                &task_id,
                 attempt,
-                worktree_path: worktree.clone(),
-                prompt: json!({
-                    "role": "implementer",
-                    "capsule_file": implementer_capsule_file,
-                    "critical": {
-                        "task_id": task_id,
-                        "attempt": attempt,
-                        "objective": task.objective,
-                        "acceptance": task.acceptance
-                    }
-                })
-                .to_string(),
-                env: capsule_env(
-                    &implementer_capsule_path,
-                    &implementer_capsule_sha,
-                    "implementer",
-                ),
-                timeout: Duration::from_secs(45 * 60),
-            })?;
+                "implementer",
+            )?;
+            let implementer_lease_file = implementer_lease_path.display().to_string();
             let implementer_output =
                 validate_implementer_output(implementer_res.structured_output.as_ref());
             let implementer_output_error = implementer_output.as_ref().err().cloned();
@@ -138,6 +148,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                         "stdout_path": implementer_res.stdout_path,
                         "stderr_path": implementer_res.stderr_path,
                         "capsule_path": implementer_capsule_file,
+                        "lease_path": implementer_lease_file,
                         "output_valid": implementer_output.is_ok(),
                         "output_error": implementer_output_error
                     }),
@@ -158,7 +169,8 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                     findings.push(format!("invalid implementer output: {err}"));
                 }
                 if findings.is_empty() {
-                    findings.push("implementer did not produce valid submission output".to_string());
+                    findings
+                        .push("implementer did not produce valid submission output".to_string());
                 }
                 let reason = findings[0].clone();
                 append_event(
@@ -241,27 +253,37 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 },
                 input.ndjson_log.as_deref(),
             )?;
-            let reviewer_res = provider.run(AgentRequest {
-                role: "reviewer".to_string(),
-                task_id: task_id.clone(),
+            let (reviewer_res, _reviewer_lease_path) = run_with_attempt_lease(
+                &*provider,
+                AgentRequest {
+                    role: "reviewer".to_string(),
+                    task_id: task_id.clone(),
+                    attempt,
+                    worktree_path: worktree.clone(),
+                    prompt: json!({
+                        "role": "reviewer",
+                        "capsule_file": reviewer_capsule_file,
+                        "critical": {
+                            "task_id": task_id,
+                            "attempt": attempt,
+                            "objective": task.objective,
+                            "acceptance": task.acceptance
+                        }
+                    })
+                    .to_string(),
+                    env: capsule_env(&reviewer_capsule_path, &reviewer_capsule_sha, "reviewer"),
+                    timeout: Duration::from_secs(input.cfg.attempt_timeout_secs),
+                },
+                &input.base_dir,
+                &input.run_id,
+                &task_id,
                 attempt,
-                worktree_path: worktree.clone(),
-                prompt: json!({
-                    "role": "reviewer",
-                    "capsule_file": reviewer_capsule_file,
-                    "critical": {
-                        "task_id": task_id,
-                        "attempt": attempt,
-                        "objective": task.objective,
-                        "acceptance": task.acceptance
-                    }
-                })
-                .to_string(),
-                env: capsule_env(&reviewer_capsule_path, &reviewer_capsule_sha, "reviewer"),
-                timeout: Duration::from_secs(20 * 60),
-            })?;
+                "reviewer",
+            )?;
 
-            let reviewer_output = match validate_reviewer_output(reviewer_res.structured_output.as_ref()) {
+            let reviewer_output = match validate_reviewer_output(
+                reviewer_res.structured_output.as_ref(),
+            ) {
                 Ok(output) => output,
                 Err(err) => {
                     let findings = vec![format!("invalid reviewer output: {err}")];
@@ -581,6 +603,41 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
     }
 }
 
+fn run_with_attempt_lease(
+    provider: &dyn AgentProvider,
+    req: AgentRequest,
+    repo_root: &Path,
+    run_id: &str,
+    task_id: &str,
+    attempt: i64,
+    role: &str,
+) -> Result<(AgentResult, PathBuf)> {
+    let lease_path = lease::init_active_lease(repo_root, run_id, task_id, attempt, role)
+        .with_context(|| {
+            format!(
+                "initialize lease for task '{}' attempt {} role {}",
+                task_id, attempt, role
+            )
+        })?;
+    let ticker = LeaseTicker::start(
+        lease_path.clone(),
+        Duration::from_secs(lease::LEASE_TICK_SECS),
+    );
+
+    let res = provider.run(req);
+    ticker.stop();
+    let release_res = lease::release_lease(&lease_path);
+
+    let result = res?;
+    release_res.with_context(|| {
+        format!(
+            "release lease for task '{}' attempt {} role {}",
+            task_id, attempt, role
+        )
+    })?;
+    Ok((result, lease_path))
+}
+
 fn parse_prompt_json(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!({"raw_prompt": raw}))
 }
@@ -597,7 +654,9 @@ struct ReviewerOutput {
     findings: Vec<String>,
 }
 
-fn validate_implementer_output(output: Option<&serde_json::Value>) -> std::result::Result<ImplementerOutput, String> {
+fn validate_implementer_output(
+    output: Option<&serde_json::Value>,
+) -> std::result::Result<ImplementerOutput, String> {
     let raw = output
         .cloned()
         .ok_or_else(|| "missing structured JSON output".to_string())?;
@@ -609,7 +668,9 @@ fn validate_implementer_output(output: Option<&serde_json::Value>) -> std::resul
     Ok(parsed)
 }
 
-fn validate_reviewer_output(output: Option<&serde_json::Value>) -> std::result::Result<ReviewerOutput, String> {
+fn validate_reviewer_output(
+    output: Option<&serde_json::Value>,
+) -> std::result::Result<ReviewerOutput, String> {
     let raw = output
         .cloned()
         .ok_or_else(|| "missing structured JSON output".to_string())?;

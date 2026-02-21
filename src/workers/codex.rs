@@ -198,7 +198,8 @@ fn resolve_agent_cmd(provider_name: &str, override_cmd: Option<&str>) -> Option<
 }
 
 fn stub_plan_translation(prompt: &str) -> Result<serde_json::Value> {
-    let parsed: serde_json::Value = serde_json::from_str(prompt).context("parse translator prompt")?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(prompt).context("parse translator prompt")?;
     let markdown = parsed
         .get("spec_markdown")
         .and_then(|v| v.as_str())
@@ -214,35 +215,7 @@ fn stub_plan_translation(prompt: &str) -> Result<serde_json::Value> {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| vec!["true".to_string()]);
 
-    let translated = match crate::plan::translator::translate_markdown_to_spl(markdown, &default_checks)
-    {
-        Ok(plan) => plan,
-        Err(err) => {
-            if !format!("{err}").contains("no tasks found in markdown") {
-                return Err(err);
-            }
-            let objective = markdown
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .unwrap_or("implement specification")
-                .chars()
-                .take(140)
-                .collect::<String>();
-            crate::plan::translator::TranslatedPlan {
-                spl: format!(
-                    "; generated plan.spl\n(given (task task1))\n(given (has-objective task1))\n(given (has-acceptance task1))\n(given (ready task1))\n"
-                ),
-                tasks: vec![crate::plan::translator::PlanTask {
-                    id: "task1".to_string(),
-                    objective: objective.clone(),
-                    acceptance: format!("Complete objective: {objective}"),
-                    dependencies: Vec::new(),
-                    checks: default_checks.clone(),
-                }],
-            }
-        }
-    };
+    let translated = crate::plan::translator::translate_markdown_to_spl(markdown, &default_checks)?;
 
     Ok(serde_json::json!({
         "spl": translated.spl,

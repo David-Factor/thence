@@ -192,7 +192,11 @@ fn unresolved_findings(events: &[EventRow], task_id: &str) -> Vec<serde_json::Va
         .into_iter()
         .filter(|(attempt, _)| !resolved.get(attempt).copied().unwrap_or(false))
         .map(|(attempt, reasons)| {
-            let reasons = reasons.into_iter().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+            let reasons = reasons
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
             json!({"attempt": attempt, "reasons": reasons})
         })
         .collect()

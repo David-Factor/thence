@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use spindle_parser::parse_spl;
@@ -63,10 +63,18 @@ pub fn translate_markdown_to_spl(
 
     for line in markdown.lines() {
         let trimmed = line.trim();
-        if !trimmed.starts_with("- [ ]") {
+        let body = if let Some(rest) = trimmed.strip_prefix("- [ ]") {
+            rest.trim()
+        } else if let Some(rest) = trimmed.strip_prefix("- ") {
+            rest.trim()
+        } else if let Some(rest) = trimmed.strip_prefix("* ") {
+            rest.trim()
+        } else {
+            continue;
+        };
+        if body.is_empty() {
             continue;
         }
-        let body = trimmed.trim_start_matches("- [ ]").trim();
         // Format: task-id: objective | deps=a,b | checks=cmd1,cmd2
         let mut parts = body.split('|').map(str::trim);
         let first = parts.next().unwrap_or("");
@@ -120,9 +128,23 @@ pub fn translate_markdown_to_spl(
     }
 
     if tasks.is_empty() {
-        bail!(
-            "translation failed: no tasks found in markdown. Use '- [ ] task-id: objective' lines"
-        )
+        let objective = markdown
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| line.trim_start_matches('#').trim())
+            .find(|line| !line.is_empty())
+            .map(ToString::to_string);
+        let objective = objective.ok_or_else(|| {
+            anyhow!("translation failed: specification is empty; add concrete requirements")
+        })?;
+        tasks.push(PlanTask {
+            id: "task1".to_string(),
+            objective: objective.clone(),
+            acceptance: format!("Complete objective: {objective}"),
+            dependencies: Vec::new(),
+            checks: default_checks.to_vec(),
+        });
     }
 
     let mut spl = String::from("; generated plan.spl\n");

@@ -1,3 +1,4 @@
+pub(crate) mod lease;
 mod r#loop;
 pub mod packet;
 pub mod scheduler;
@@ -36,6 +37,7 @@ pub struct RunCommand {
     pub allow_partial_completion: bool,
     pub trust_plan_checks: bool,
     pub interactive: bool,
+    pub attempt_timeout_secs: Option<u64>,
     pub debug_dump_spl: Option<PathBuf>,
     pub agent_cmd: Option<String>,
     pub agent_cmd_codex: Option<String>,
@@ -63,6 +65,8 @@ pub struct RunConfig {
     pub max_attempts: i64,
     #[serde(default = "default_check_timeout_secs")]
     pub check_timeout_secs: u64,
+    #[serde(default = "default_attempt_timeout_secs")]
+    pub attempt_timeout_secs: u64,
     #[serde(default)]
     pub agent_cmd: AgentCommandConfig,
 }
@@ -101,6 +105,10 @@ fn default_check_timeout_secs() -> u64 {
     10 * 60
 }
 
+fn default_attempt_timeout_secs() -> u64 {
+    45 * 60
+}
+
 fn translated_plan_path(run_dir: &Path) -> PathBuf {
     run_dir.join("translated_plan.json")
 }
@@ -111,7 +119,8 @@ fn frozen_spec_path(run_dir: &Path) -> PathBuf {
 
 fn write_frozen_spec(run_dir: &Path, markdown: &str) -> Result<PathBuf> {
     let path = frozen_spec_path(run_dir);
-    std::fs::write(&path, markdown).with_context(|| format!("write frozen spec {}", path.display()))?;
+    std::fs::write(&path, markdown)
+        .with_context(|| format!("write frozen spec {}", path.display()))?;
     Ok(path)
 }
 
@@ -121,8 +130,7 @@ fn read_spec_markdown(run_dir: &Path, plan_path: &Path) -> Result<String> {
         return fs::read_to_string(&frozen)
             .with_context(|| format!("read frozen spec {}", frozen.display()));
     }
-    fs::read_to_string(plan_path)
-        .with_context(|| format!("read plan file {}", plan_path.display()))
+    fs::read_to_string(plan_path).with_context(|| format!("read plan file {}", plan_path.display()))
 }
 
 fn translate_spec_with_agent(
@@ -131,7 +139,10 @@ fn translate_spec_with_agent(
     plan_file: &Path,
     markdown: &str,
     run_dir: &Path,
-) -> Result<(translator::TranslatedPlan, crate::workers::provider::AgentResult)> {
+) -> Result<(
+    translator::TranslatedPlan,
+    crate::workers::provider::AgentResult,
+)> {
     let provider = provider_for(&cfg.agent, &cfg.agent_cmd)?;
     let prompt = packet::build_plan_translator_prompt(
         repo_root,
@@ -238,6 +249,9 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         interactive: cmd.interactive,
         max_attempts: 3,
         check_timeout_secs: 10 * 60,
+        attempt_timeout_secs: cmd
+            .attempt_timeout_secs
+            .unwrap_or_else(default_attempt_timeout_secs),
         agent_cmd: AgentCommandConfig {
             default_cmd: cmd.agent_cmd,
             codex: cmd.agent_cmd_codex,
@@ -271,24 +285,29 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         cmd.log.as_deref(),
     )?;
 
-    let (translated, translation_res) =
-        match translate_spec_with_agent(&cfg, &repo_root, &cmd.plan_file, &markdown, &run_dir) {
-            Ok(result) => result,
-            Err(e) => {
-                let qid = "spec-q-translate";
-                append_event(
-                    &store,
-                    &run_id,
-                    &NewEvent::simple(
-                        "spec_question_opened",
-                        json!({"question_id": qid, "question": format!("Plan translation failed: {e}")}),
-                    ),
-                    cmd.log.as_deref(),
-                )?;
-                pause_for_question(&store, &run_id, qid, cmd.log.as_deref())?;
-                bail!("run paused due to translation failure")
-            }
-        };
+    let (translated, translation_res) = match translate_spec_with_agent(
+        &cfg,
+        &repo_root,
+        &cmd.plan_file,
+        &markdown,
+        &run_dir,
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            let qid = "spec-q-translate";
+            append_event(
+                &store,
+                &run_id,
+                &NewEvent::simple(
+                    "spec_question_opened",
+                    json!({"question_id": qid, "question": format!("Plan translation failed: {e}")}),
+                ),
+                cmd.log.as_deref(),
+            )?;
+            pause_for_question(&store, &run_id, qid, cmd.log.as_deref())?;
+            bail!("run paused due to translation failure")
+        }
+    };
     std::fs::write(&spl_path, &translated.spl)
         .with_context(|| format!("write translated SPL {}", spl_path.display()))?;
     translator::save_translated_plan(&translated_path, &translated)?;
@@ -637,7 +656,7 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
     let plan_path = PathBuf::from(&run.plan_path);
     let repo_root = repo_root_for_plan(&plan_path)?;
 
-    append_attempt_interrupted_for_orphans(store, run_id, log.as_deref())?;
+    append_attempt_interrupted_for_orphans(store, run_id, &repo_root, log.as_deref())?;
     let events = store.list_events(run_id)?;
     let state = RunProjection::replay(&events);
     if state.terminal.is_some() {
@@ -805,6 +824,7 @@ pub(crate) fn append_event(
 fn append_attempt_interrupted_for_orphans(
     store: &EventStore,
     run_id: &str,
+    repo_root: &Path,
     ndjson_log: Option<&Path>,
 ) -> Result<()> {
     let events = store.list_events(run_id)?;
@@ -833,6 +853,15 @@ fn append_attempt_interrupted_for_orphans(
         if complete {
             continue;
         }
+        let (reason, lease_details) =
+            match lease::evaluate_orphan_attempt(repo_root, run_id, &task_id, attempt)? {
+                lease::OrphanLeaseDecision::Interrupt { reason, details } => (reason, details),
+                lease::OrphanLeaseDecision::LikelyActive { reason, details } => {
+                    let details_str = serde_json::to_string_pretty(&details)
+                        .unwrap_or_else(|_| details.to_string());
+                    bail!("{reason}\nlease_details: {details_str}");
+                }
+            };
         append_event(
             store,
             run_id,
@@ -842,7 +871,7 @@ fn append_attempt_interrupted_for_orphans(
                 actor_role: Some("supervisor".to_string()),
                 actor_id: Some("supervisor-recovery".to_string()),
                 attempt: Some(attempt),
-                payload_json: json!({"reason": "orphaned in-flight attempt detected on resume"}),
+                payload_json: json!({"reason": reason, "lease": lease_details}),
                 dedupe_key: Some(format!("attempt_interrupted:{task_id}:{attempt}")),
             },
             ndjson_log,
@@ -921,24 +950,25 @@ fn load_or_translate_plan_for_run(
         // When there is no frozen translated plan yet, always translate from the live spec.
         let markdown = fs::read_to_string(plan_path)
             .with_context(|| format!("read plan file {}", plan_path.display()))?;
-        let (translated, translation_res) =
-            match translate_spec_with_agent(cfg, repo_root, plan_path, &markdown, &run_dir) {
-                Ok(result) => result,
-                Err(err) => {
-                    let qid = "spec-q-translate";
-                    append_event(
-                        store,
-                        run_id,
-                        &NewEvent::simple(
-                            "spec_question_opened",
-                            json!({"question_id": qid, "question": format!("Plan translation failed: {err}")}),
-                        ),
-                        ndjson_log,
-                    )?;
-                    pause_for_question(store, run_id, qid, ndjson_log)?;
-                    bail!("run paused due to translation failure")
-                }
-            };
+        let (translated, translation_res) = match translate_spec_with_agent(
+            cfg, repo_root, plan_path, &markdown, &run_dir,
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                let qid = "spec-q-translate";
+                append_event(
+                    store,
+                    run_id,
+                    &NewEvent::simple(
+                        "spec_question_opened",
+                        json!({"question_id": qid, "question": format!("Plan translation failed: {err}")}),
+                    ),
+                    ndjson_log,
+                )?;
+                pause_for_question(store, run_id, qid, ndjson_log)?;
+                bail!("run paused due to translation failure")
+            }
+        };
         fs::write(&run.spl_plan_path, &translated.spl)
             .with_context(|| format!("write translated SPL {}", run.spl_plan_path))?;
         translator::save_translated_plan(&translated_path, &translated)?;
@@ -1124,9 +1154,8 @@ fn resolve_checks_configuration_on_resume(
 
     let run_dir = run_artifact_dir(repo_root, run_id);
     let markdown = read_spec_markdown(&run_dir, Path::new(&run.plan_path))?;
-    let translated =
-        translator::load_translated_plan(&translated_plan_path(&run_dir))
-            .context("load translated plan for checks proposal on resume")?;
+    let translated = translator::load_translated_plan(&translated_plan_path(&run_dir))
+        .context("load translated plan for checks proposal on resume")?;
     let checks_input = ChecksResolutionInput {
         repo_root,
         plan_file: Path::new(&run.plan_path),
