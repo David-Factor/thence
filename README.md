@@ -2,6 +2,34 @@
 
 `whence` is an event-sourced supervisor for executing free-form Markdown specs with implementer/reviewer loops, checks gating, and resumable runs.
 
+## Install
+
+### One-line install (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
+```
+
+Defaults:
+- installs to `~/.local/bin/whence`
+- downloads latest GitHub release for your OS/arch
+
+Useful overrides:
+
+```bash
+# Install a specific release tag
+VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
+
+# Install to a different directory
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
+```
+
+If needed, add install dir to `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 ## How To Use
 
 ### 1. Write a spec

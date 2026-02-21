@@ -1,0 +1,97 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build-${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: whence-${{ github.ref_name }}-x86_64-unknown-linux-musl.tar.gz
+            bin: whence
+            setup: sudo apt-get update && sudo apt-get install -y musl-tools
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: whence-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
+            bin: whence
+            setup: ""
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact: whence-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
+            bin: whence
+            setup: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup platform deps
+        if: matrix.setup != ''
+        run: ${{ matrix.setup }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" ./whence
+          tar -czf "${{ matrix.artifact }}" whence
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten artifacts
+        run: |
+          find dist -type f -name '*.tar.gz' -exec cp {} . \;
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          generate_release_notes: true
+          files: |
+            whence-*.tar.gz
+
