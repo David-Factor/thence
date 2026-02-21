@@ -24,10 +24,8 @@ You provide a free-form Markdown spec.
 3. gates closure with checks,
 4. records everything in an event log so runs are resumable and auditable.
 
-Important UX choice:
-
-- SPL/defeasible logic is used under the hood, but is intentionally not required from the user.
-- You interact through specs and simple CLI commands, not through logic syntax.
+Under the hood, `thence` translates your spec into an internal plan, then appends assertions/facts as each attempt runs.
+Those facts are used to reason about what should happen next (claim, retry, pause, or close), while you interact through specs and simple CLI commands.
 
 Mental model:
 
@@ -62,7 +60,7 @@ Mental model:
 +------------------------+
 ```
 
-`SPL + defeasible reasoning runs internally; users interact via specs + CLI only.`
+`Plan + facts drive internal reasoning; users interact via specs + CLI.`
 
 ## Relationship to hence
 
