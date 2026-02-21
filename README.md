@@ -18,6 +18,49 @@ That pattern shows up repeatedly in real work. For example: writing a spec for a
 
 It is also an exploration of the seam from Hugo's work: using defeasible-logic-style orchestration ideas for runtime policy and state transitions, while keeping the user experience simple and markdown-first.
 
+## Under The Hood
+
+`thence` is an event-sourced supervisor loop. Agents do the text-and-code work (translate spec, implement, review). The supervisor does the bookkeeping and scheduling.
+
+On start, `thence` translates your `spec.md` into (1) a task list and (2) a small rule file (`plan.spl`) written in Spindle Lisp (SPL), a tiny language for facts and rules. At runtime, `thence` combines that translated plan with built-in policy rules and the current run state.
+
+On each tick, it replays the run's event log into a current projection, derives policy facts, and asks the Spindle reasoner what is provable right now. Those conclusions are things like "this task is claimable", "this task is closable", or "this task is merge-ready". As new events arrive, the derived facts (and therefore the conclusions) can change. That's the non-monotonic part: new information can change what is runnable next.
+
+Defeasible logic is a good fit for this domain because software work is mostly defaults with explicit exceptions: "keep going" is the default, but an open question, missing approvals, failing checks, or new findings should override that default. Today `thence` ships a conservative policy built from strict rules (they apply whenever their conditions are true) plus projected lifecycle facts; adding defeasible rules and priorities is the next step.
+
+### Core Mental Model
+
+```text
+                 +------------------------+
+                 | spec.md + config.toml  |
+                 +-----------+------------+
+                             |
+                             v
+                 +-----------+------------+
+                 | plan translator (codex)|
+                 | -> tasks + plan.spl    |
+                 +-----------+------------+
+                             |
+                             v
+  +----------------------+  replay   +----------------------+
+  | event log (run DB)   +---------> | RunProjection         |
+  | append-only          |           | (current state)       |
+  +----------+-----------+           +----------+-----------+
+             ^                                  |
+             | append events                     | facts + plan.spl
+             |                                  v
+  +----------+-----------+           +----------+-----------+
+  | workers (codex)      |           | Spindle policy       |
+  | implement / review   |           | query provable       |
+  | checks               |           | (claimable, etc)     |
+  +----------------------+           +----------+-----------+
+                                               |
+                                               v
+                                     scheduler -> run / pause
+
+If a spec question opens: pause -> answer -> resume -> continue.
+```
+
 ## Setup
 
 Prerequisites:
