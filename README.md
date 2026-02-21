@@ -82,23 +82,7 @@ In practical terms, it applies that foundation to a different user experience:
 curl -fsSL https://raw.githubusercontent.com/David-Factor/thence/main/install.sh | bash
 ```
 
-Defaults:
-
-- installs to `~/.local/bin/thence`
-- installs latest release for your OS/arch
-
-Useful overrides:
-
-```bash
-VERSION=v0.1.2 curl -fsSL https://raw.githubusercontent.com/David-Factor/thence/main/install.sh | bash
-INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/David-Factor/thence/main/install.sh | bash
-```
-
-For private forks/repos, use authenticated GitHub CLI:
-
-```bash
-bash <(gh api "repos/<owner>/<repo>/contents/install.sh?ref=main" --jq '.content' | base64 --decode)
-```
+This installs the latest release for your OS/arch to `~/.local/bin/thence`.
 
 If needed:
 
