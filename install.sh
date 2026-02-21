@@ -60,7 +60,15 @@ tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
 echo "Installing $REPO ${VERSION} for ${target_arch}-${target_os}..."
-curl -fL "$url" -o "$tmpdir/$asset"
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  gh release download "$VERSION" \
+    --repo "$OWNER/$REPO" \
+    --pattern "$asset" \
+    --dir "$tmpdir" \
+    --clobber >/dev/null
+else
+  curl -fL "$url" -o "$tmpdir/$asset"
+fi
 tar -xzf "$tmpdir/$asset" -C "$tmpdir"
 
 mkdir -p "$INSTALL_DIR"
@@ -74,4 +82,3 @@ case ":$PATH:" in
     echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
     ;;
 esac
-

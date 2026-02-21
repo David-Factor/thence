@@ -10,6 +10,12 @@
 curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
 ```
 
+For private repos, use authenticated GitHub CLI:
+
+```bash
+bash <(gh api "repos/David-Factor/whence/contents/install.sh?ref=main" --jq '.content' | base64 --decode)
+```
+
 Defaults:
 - installs to `~/.local/bin/whence`
 - downloads latest GitHub release for your OS/arch
