@@ -12,7 +12,7 @@ In practice, the bottleneck isn't "can it code?"; it's "is the spec right?" and 
 
 What works for me is an outer loop: one agent implements from the spec, I run checks, a second agent reviews, and its findings become the next prompt. I only step in when the loop needs a human decision.
 
-Good runs also need solid inner loops: project-specific harnesses that turn "is this feature actually working?" into a concrete signal (OCR verification, scrape replays, golden outputs). Those harnesses are often the grounding that makes the outer loop work.
+Good runs also need solid inner loops: common checks like tests, linting, and typechecking, plus project-specific harnesses that turn "is this feature actually working?" into a concrete signal (OCR verification, scrape replays, golden outputs). Those signals are often the grounding that makes the outer loop work.
 
 `thence` exists to mechanize it: specs in, implementation/review/check loops out, with explicit pause points when a human answer is needed and a resumable event history.
 
