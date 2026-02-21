@@ -292,8 +292,133 @@ fn reviewer_missing_output_fails_closed() {
     let events = store.list_events(&run_id).unwrap();
     assert!(events.iter().any(|e| e.event_type == "review_requested"));
     assert!(events.iter().any(|e| e.event_type == "review_found_issues"));
+    let invalid_reviewer = events
+        .iter()
+        .find(|e| e.event_type == "review_found_issues")
+        .expect("missing review_found_issues");
+    assert!(
+        invalid_reviewer
+            .payload_json
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("invalid reviewer output")
+    );
     assert!(events.iter().all(|e| e.event_type != "review_approved"));
     assert!(events.iter().all(|e| e.event_type != "task_closed"));
+}
+
+#[test]
+fn reviewer_findings_persist_and_reach_next_implementer_attempt() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    let agent_path = tmp.path().join("agent.sh");
+    fs::write(&plan_path, "- [ ] task-a: implement feature with rework loop").unwrap();
+    fs::write(
+        &agent_path,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+case "${WHENCE_ROLE:-}" in
+  plan-translator)
+    cat > "${WHENCE_RESULT_FILE}" <<'JSON'
+{"spl":"(given (task task-a))\n(given (ready task-a))\n","tasks":[{"id":"task-a","objective":"implement feature with rework loop","acceptance":"Complete objective: implement feature with rework loop","dependencies":[],"checks":["true"]}]}
+JSON
+    ;;
+  implementer)
+    if [ "${WHENCE_ATTEMPT:-1}" = "1" ]; then
+      echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}"
+    else
+      if grep -q "must-handle-edge-case" "${WHENCE_CAPSULE_FILE}"; then
+        echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}"
+      else
+        echo '{"submitted":false}' > "${WHENCE_RESULT_FILE}"
+      fi
+    fi
+    ;;
+  reviewer)
+    if [ "${WHENCE_ATTEMPT:-1}" = "1" ]; then
+      cat > "${WHENCE_RESULT_FILE}" <<'JSON'
+{"approved":false,"findings":["must-handle-edge-case","add-regression-test"]}
+JSON
+    else
+      echo '{"approved":true,"findings":[]}' > "${WHENCE_RESULT_FILE}"
+    fi
+    ;;
+  checks-proposer) echo '{"commands":["true"],"rationale":"ok"}' > "${WHENCE_RESULT_FILE}" ;;
+  *) echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}" ;;
+esac
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&agent_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&agent_path, perms).unwrap();
+    }
+
+    let run_id = test_run_id("findings-forward");
+    execute_run(RunCommand {
+        plan_file: plan_path.clone(),
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+        agent_cmd: Some(format!("bash {}", agent_path.display())),
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
+    })
+    .unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+
+    let findings_event = events
+        .iter()
+        .find(|e| e.event_type == "review_found_issues" && e.attempt == Some(1))
+        .expect("missing review_found_issues for attempt 1");
+    let findings = findings_event
+        .payload_json
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(findings.iter().any(|v| v.as_str() == Some("must-handle-edge-case")));
+
+    assert!(events
+        .iter()
+        .any(|e| e.event_type == "task_claimed" && e.attempt == Some(2)));
+    assert!(events
+        .iter()
+        .any(|e| e.event_type == "review_approved" && e.attempt == Some(2)));
+    assert!(events.iter().any(|e| e.event_type == "task_closed"));
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+
+    let capsule = plan_path
+        .parent()
+        .unwrap()
+        .join(".whence")
+        .join("runs")
+        .join(&run_id)
+        .join("capsules")
+        .join("task-a")
+        .join("attempt2")
+        .join("implementer.json");
+    let capsule_raw = fs::read_to_string(capsule).unwrap();
+    assert!(capsule_raw.contains("must-handle-edge-case"));
 }
 
 #[test]

@@ -62,7 +62,7 @@ Use external agent commands without environment variable setup:
 ```bash
 cargo run --bin whence -- run plan.md \
   --agent codex \
-  --agent-cmd-codex "bash /path/to/agent-adapter.sh"
+  --agent-cmd-codex "bash scripts/agent-codex.sh"
 ```
 
 Available flags:
@@ -70,6 +70,15 @@ Available flags:
 - `--agent-cmd-codex`
 - `--agent-cmd-claude`
 - `--agent-cmd-opencode`
+
+### Bundled Codex Adapter
+
+This repo ships a maintained adapter at `scripts/agent-codex.sh`.
+
+It expects `codex` on `PATH`, reads `WHENCE_PROMPT_FILE` and optional
+`WHENCE_CAPSULE_FILE`, and writes structured JSON to `WHENCE_RESULT_FILE`.
+Each role uses a strict output schema so malformed outputs fail closed in the
+supervisor loop.
 
 ## Reasoning Layer (Defeasible Logic)
 

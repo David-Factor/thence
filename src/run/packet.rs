@@ -2,7 +2,7 @@ use crate::events::EventRow;
 use crate::events::projector::{RunProjection, TaskProjection};
 use crate::plan::translator::TranslatedPlan;
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 const PLAN_TRANSLATOR_SPL_REFERENCE: &str = r#"SPL QUICK REFERENCE (whence translator subset)
@@ -155,13 +155,29 @@ fn unresolved_findings(events: &[EventRow], task_id: &str) -> Vec<serde_json::Va
         match ev.event_type.as_str() {
             "review_found_issues" => {
                 let attempt = ev.attempt.unwrap_or(0);
-                let reason = ev
+                let mut reasons = ev
                     .payload_json
-                    .get("reason")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("review findings")
-                    .to_string();
-                by_attempt.entry(attempt).or_default().push(reason);
+                    .get("findings")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if reasons.is_empty() {
+                    reasons.push(
+                        ev.payload_json
+                            .get("reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("review findings")
+                            .to_string(),
+                    );
+                }
+                by_attempt.entry(attempt).or_default().extend(reasons);
                 resolved.insert(attempt, false);
             }
             "review_approved" => {
@@ -175,7 +191,10 @@ fn unresolved_findings(events: &[EventRow], task_id: &str) -> Vec<serde_json::Va
     by_attempt
         .into_iter()
         .filter(|(attempt, _)| !resolved.get(attempt).copied().unwrap_or(false))
-        .map(|(attempt, reasons)| json!({"attempt": attempt, "reasons": reasons}))
+        .map(|(attempt, reasons)| {
+            let reasons = reasons.into_iter().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+            json!({"attempt": attempt, "reasons": reasons})
+        })
         .collect()
 }
 

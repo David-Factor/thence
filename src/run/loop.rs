@@ -7,6 +7,7 @@ use crate::run::{RunConfig, append_event, packet, run_artifact_dir, scheduler, s
 use crate::vcs;
 use crate::workers::provider::{AgentRequest, provider_for};
 use anyhow::Result;
+use serde::Deserialize;
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -116,6 +117,9 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 ),
                 timeout: Duration::from_secs(45 * 60),
             })?;
+            let implementer_output =
+                validate_implementer_output(implementer_res.structured_output.as_ref());
+            let implementer_output_error = implementer_output.as_ref().err().cloned();
 
             append_event(
                 store,
@@ -133,14 +137,30 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                         "exit_code": implementer_res.exit_code,
                         "stdout_path": implementer_res.stdout_path,
                         "stderr_path": implementer_res.stderr_path,
-                        "capsule_path": implementer_capsule_file
+                        "capsule_path": implementer_capsule_file,
+                        "output_valid": implementer_output.is_ok(),
+                        "output_error": implementer_output_error
                     }),
                     dedupe_key: None,
                 },
                 input.ndjson_log.as_deref(),
             )?;
 
-            if implementer_res.exit_code != 0 {
+            if implementer_res.exit_code != 0 || implementer_output.is_err() {
+                let mut findings = Vec::new();
+                if implementer_res.exit_code != 0 {
+                    findings.push(format!(
+                        "implementer exited non-zero (exit_code={})",
+                        implementer_res.exit_code
+                    ));
+                }
+                if let Err(err) = implementer_output {
+                    findings.push(format!("invalid implementer output: {err}"));
+                }
+                if findings.is_empty() {
+                    findings.push("implementer did not produce valid submission output".to_string());
+                }
+                let reason = findings[0].clone();
                 append_event(
                     store,
                     &input.run_id,
@@ -148,9 +168,9 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                         event_type: "review_found_issues".to_string(),
                         task_id: Some(task_id.clone()),
                         actor_role: Some("supervisor".to_string()),
-                        actor_id: Some("implementer-exit-gate".to_string()),
+                        actor_id: Some("implementer-output-gate".to_string()),
                         attempt: Some(attempt),
-                        payload_json: json!({"reason": format!("implementer exit_code={}", implementer_res.exit_code)}),
+                        payload_json: json!({"reason": reason, "findings": findings, "source": "implementer_output_validation"}),
                         dedupe_key: None,
                     },
                     input.ndjson_log.as_deref(),
@@ -165,7 +185,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                             actor_role: Some("supervisor".to_string()),
                             actor_id: Some("supervisor-1".to_string()),
                             attempt: Some(attempt),
-                            payload_json: json!({"reason": "max attempts reached after implementer failure"}),
+                            payload_json: json!({"reason": "max attempts reached after implementer gate failure"}),
                             dedupe_key: None,
                         },
                         input.ndjson_log.as_deref(),
@@ -241,14 +261,56 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 timeout: Duration::from_secs(20 * 60),
             })?;
 
-            let reviewer_approved = reviewer_res
-                .structured_output
-                .as_ref()
-                .and_then(|v| v.get("approved"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let reviewer_output = match validate_reviewer_output(reviewer_res.structured_output.as_ref()) {
+                Ok(output) => output,
+                Err(err) => {
+                    let findings = vec![format!("invalid reviewer output: {err}")];
+                    let reason = findings[0].clone();
+                    append_event(
+                        store,
+                        &input.run_id,
+                        &NewEvent {
+                            event_type: "review_found_issues".to_string(),
+                            task_id: Some(task_id.clone()),
+                            actor_role: Some("reviewer".to_string()),
+                            actor_id: Some(reviewer_id.clone()),
+                            attempt: Some(attempt),
+                            payload_json: json!({
+                                "reason": reason,
+                                "findings": findings,
+                                "source": "reviewer_output_validation"
+                            }),
+                            dedupe_key: None,
+                        },
+                        input.ndjson_log.as_deref(),
+                    )?;
+                    if attempt >= input.cfg.max_attempts {
+                        append_event(
+                            store,
+                            &input.run_id,
+                            &NewEvent {
+                                event_type: "task_failed_terminal".to_string(),
+                                task_id: Some(task_id),
+                                actor_role: Some("supervisor".to_string()),
+                                actor_id: Some("supervisor-1".to_string()),
+                                attempt: Some(attempt),
+                                payload_json: json!({"reason": "max attempts reached after invalid reviewer output"}),
+                                dedupe_key: None,
+                            },
+                            input.ndjson_log.as_deref(),
+                        )?;
+                    }
+                    continue;
+                }
+            };
 
-            if !reviewer_approved {
+            if !reviewer_output.approved {
+                let findings = if reviewer_output.findings.is_empty() {
+                    vec!["reviewer rejected submission without findings".to_string()]
+                } else {
+                    reviewer_output.findings
+                };
+                let reason = findings[0].clone();
                 append_event(
                     store,
                     &input.run_id,
@@ -258,7 +320,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                         actor_role: Some("reviewer".to_string()),
                         actor_id: Some(reviewer_id),
                         attempt: Some(attempt),
-                        payload_json: json!({"reason": "review findings"}),
+                        payload_json: json!({"reason": reason, "findings": findings, "source": "reviewer"}),
                         dedupe_key: None,
                     },
                     input.ndjson_log.as_deref(),
@@ -292,7 +354,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                     actor_role: Some("reviewer".to_string()),
                     actor_id: Some(reviewer_id),
                     attempt: Some(attempt),
-                    payload_json: json!({"approved": true}),
+                    payload_json: json!({"approved": true, "finding_count": reviewer_output.findings.len()}),
                     dedupe_key: None,
                 },
                 input.ndjson_log.as_deref(),
@@ -310,6 +372,11 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 &checks,
                 Duration::from_secs(input.cfg.check_timeout_secs),
             )?;
+            let checks_findings = if checks_ok {
+                Vec::new()
+            } else {
+                checks_failure_findings(&checks_payload)
+            };
             append_event(
                 store,
                 &input.run_id,
@@ -326,6 +393,11 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
             )?;
 
             if !checks_ok {
+                let findings = checks_findings;
+                let reason = findings
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "checks failed".to_string());
                 append_event(
                     store,
                     &input.run_id,
@@ -335,7 +407,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                         actor_role: Some("supervisor".to_string()),
                         actor_id: Some("checks-gate".to_string()),
                         attempt: Some(attempt),
-                        payload_json: json!({"reason": "checks failed"}),
+                        payload_json: json!({"reason": reason, "findings": findings, "source": "checks_gate"}),
                         dedupe_key: None,
                     },
                     input.ndjson_log.as_deref(),
@@ -511,6 +583,85 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
 
 fn parse_prompt_json(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|_| json!({"raw_prompt": raw}))
+}
+
+#[derive(Debug, Deserialize)]
+struct ImplementerOutput {
+    submitted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewerOutput {
+    approved: bool,
+    #[serde(default)]
+    findings: Vec<String>,
+}
+
+fn validate_implementer_output(output: Option<&serde_json::Value>) -> std::result::Result<ImplementerOutput, String> {
+    let raw = output
+        .cloned()
+        .ok_or_else(|| "missing structured JSON output".to_string())?;
+    let parsed: ImplementerOutput =
+        serde_json::from_value(raw).map_err(|err| format!("output schema mismatch: {err}"))?;
+    if !parsed.submitted {
+        return Err("field 'submitted' must be true".to_string());
+    }
+    Ok(parsed)
+}
+
+fn validate_reviewer_output(output: Option<&serde_json::Value>) -> std::result::Result<ReviewerOutput, String> {
+    let raw = output
+        .cloned()
+        .ok_or_else(|| "missing structured JSON output".to_string())?;
+    let mut parsed: ReviewerOutput =
+        serde_json::from_value(raw).map_err(|err| format!("output schema mismatch: {err}"))?;
+    parsed.findings = parsed
+        .findings
+        .into_iter()
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+    if !parsed.approved && parsed.findings.is_empty() {
+        parsed
+            .findings
+            .push("reviewer rejected submission without findings".to_string());
+    }
+    Ok(parsed)
+}
+
+fn checks_failure_findings(checks_payload: &serde_json::Value) -> Vec<String> {
+    let mut findings = checks_payload
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(|results| {
+            results
+                .iter()
+                .filter_map(|entry| {
+                    let ok = entry.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let timed_out = entry
+                        .get("timed_out")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if ok && !timed_out {
+                        return None;
+                    }
+                    let command = entry
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<unknown>");
+                    if timed_out {
+                        Some(format!("check timed out: {command}"))
+                    } else {
+                        Some(format!("check failed: {command}"))
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if findings.is_empty() {
+        findings.push("checks failed".to_string());
+    }
+    findings
 }
 
 fn write_capsule(
