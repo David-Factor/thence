@@ -1,4 +1,4 @@
-# thence 0.2.0 (Breaking)
+# thence 0.3.0 (Breaking)
 
 ## Breaking Changes
 
