@@ -57,6 +57,47 @@ fn end_to_end_happy_path_completes() {
 }
 
 #[test]
+fn prose_spec_translates_and_completes() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("spec.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(
+        &plan_path,
+        "# Feature Spec\nImplement a tiny auth flow with validation.\nInclude implementation and review quality checks.",
+    )
+    .unwrap();
+
+    let run_id = test_run_id("prose");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
+    })
+    .unwrap();
+
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| e.event_type == "plan_translated"));
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+}
+
+#[test]
 fn ambiguity_pauses_and_can_resume() {
     let tmp = tempdir().unwrap();
     let plan_path = tmp.path().join("plan.md");
@@ -455,6 +496,59 @@ fn translation_pause_resume_regenerates_spl_and_completes() {
 }
 
 #[test]
+fn resume_retranslates_when_translated_plan_missing() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: one").unwrap();
+
+    let run_id = test_run_id("resume-missing-translated");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path.clone(),
+        agent: "codex".to_string(),
+        workers: 2,
+        reviewers: 1,
+        checks: None,
+        reconfigure_checks: false,
+        no_checks_file: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        debug_dump_spl: None,
+        agent_cmd: None,
+        agent_cmd_codex: None,
+        agent_cmd_claude: None,
+        agent_cmd_opencode: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("checks approval"));
+
+    answer_question(&run_id, "checks-q-1", "accept", Some(db_path.clone())).unwrap();
+
+    let translated_path = plan_path
+        .parent()
+        .unwrap()
+        .join(".whence")
+        .join("runs")
+        .join(&run_id)
+        .join("translated_plan.json");
+    if translated_path.exists() {
+        fs::remove_file(translated_path).unwrap();
+    }
+
+    resume_run(&run_id, Some(db_path.clone())).unwrap();
+    let store = EventStore::open(&db_path).unwrap();
+    let events = store.list_events(&run_id).unwrap();
+    assert!(events.iter().any(|e| e.event_type == "plan_translated"));
+    assert!(events.iter().any(|e| e.event_type == "task_registered"));
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+}
+
+#[test]
 fn translate_answer_does_not_bypass_spec_review_gate() {
     let tmp = tempdir().unwrap();
     let plan_path = tmp.path().join("plan.md");
@@ -525,6 +619,11 @@ fn subprocess_invalid_reviewer_output_fails_closed() {
         r#"#!/usr/bin/env bash
 set -euo pipefail
 case "${WHENCE_ROLE:-}" in
+  plan-translator)
+    cat > "${WHENCE_RESULT_FILE}" <<'JSON'
+{"spl":"(given (task task-a))\n(given (ready task-a))\n","tasks":[{"id":"task-a","objective":"run reviewer invalid output","acceptance":"Complete objective: run reviewer invalid output","dependencies":[],"checks":["true"]}]}
+JSON
+    ;;
   implementer) echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}" ;;
   reviewer) echo '{' > "${WHENCE_RESULT_FILE}" ;;
   checks-proposer) echo '{"commands":["true"],"rationale":"ok"}' > "${WHENCE_RESULT_FILE}" ;;

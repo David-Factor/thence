@@ -52,10 +52,11 @@ fn run_stub_agent(provider_name: &str, req: AgentRequest) -> Result<AgentResult>
     fs::write(
         &metadata_path,
         format!(
-            "provider={}\nmode=stub\ntimeout_secs={}\nprompt_len={}\n",
+            "provider={}\nmode=stub\ntimeout_secs={}\nprompt_len={}\nenv_count={}\n",
             provider_name,
             req.timeout.as_secs(),
-            req.prompt.len()
+            req.prompt.len(),
+            req.env.len()
         ),
     )?;
 
@@ -74,12 +75,16 @@ fn run_stub_agent(provider_name: &str, req: AgentRequest) -> Result<AgentResult>
             "commands": ["true"],
             "rationale": "default local proposal"
         }))
+    } else if req.role == "plan-translator" {
+        stub_plan_translation(&req.prompt).ok()
     } else {
         Some(json!({"submitted": true}))
     };
 
     Ok(AgentResult {
         exit_code: if req.role == "implementer" && req.prompt.contains("[impl-fail]") {
+            2
+        } else if req.role == "plan-translator" && structured.is_none() {
             2
         } else {
             0
@@ -113,7 +118,8 @@ fn run_subprocess_agent(cmd: &str, provider_name: &str, req: AgentRequest) -> Re
 
     let stdout_file = fs::File::create(&stdout_path)?;
     let stderr_file = fs::File::create(&stderr_path)?;
-    let mut child = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-lc")
         .arg(cmd)
         .current_dir(&req.worktree_path)
@@ -126,7 +132,12 @@ fn run_subprocess_agent(cmd: &str, provider_name: &str, req: AgentRequest) -> Re
         .env("WHENCE_RESULT_FILE", &result_path)
         .env("WHENCE_TIMEOUT_SECS", req.timeout.as_secs().to_string())
         .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file))
+        .stderr(Stdio::from(stderr_file));
+    for (k, v) in &req.env {
+        command.env(k, v);
+    }
+
+    let mut child = command
         .spawn()
         .with_context(|| format!("spawn subprocess provider command for {}", req.role))?;
 
@@ -184,4 +195,57 @@ fn resolve_agent_cmd(provider_name: &str, override_cmd: Option<&str>) -> Option<
         .or_else(|| std::env::var("WHENCE_AGENT_CMD").ok())
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+fn stub_plan_translation(prompt: &str) -> Result<serde_json::Value> {
+    let parsed: serde_json::Value = serde_json::from_str(prompt).context("parse translator prompt")?;
+    let markdown = parsed
+        .get("spec_markdown")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("translator prompt missing spec_markdown"))?;
+    let default_checks = parsed
+        .get("default_checks")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| vec!["true".to_string()]);
+
+    let translated = match crate::plan::translator::translate_markdown_to_spl(markdown, &default_checks)
+    {
+        Ok(plan) => plan,
+        Err(err) => {
+            if !format!("{err}").contains("no tasks found in markdown") {
+                return Err(err);
+            }
+            let objective = markdown
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("implement specification")
+                .chars()
+                .take(140)
+                .collect::<String>();
+            crate::plan::translator::TranslatedPlan {
+                spl: format!(
+                    "; generated plan.spl\n(given (task task1))\n(given (has-objective task1))\n(given (has-acceptance task1))\n(given (ready task1))\n"
+                ),
+                tasks: vec![crate::plan::translator::PlanTask {
+                    id: "task1".to_string(),
+                    objective: objective.clone(),
+                    acceptance: format!("Complete objective: {objective}"),
+                    dependencies: Vec::new(),
+                    checks: default_checks.clone(),
+                }],
+            }
+        }
+    };
+
+    Ok(serde_json::json!({
+        "spl": translated.spl,
+        "tasks": translated.tasks
+    }))
 }

@@ -3,12 +3,13 @@ use crate::events::NewEvent;
 use crate::events::projector::RunProjection;
 use crate::events::store::EventStore;
 use crate::policy;
-use crate::run::{RunConfig, append_event, packet, scheduler};
+use crate::run::{RunConfig, append_event, packet, run_artifact_dir, scheduler, sha256_hex};
 use crate::vcs;
 use crate::workers::provider::{AgentRequest, provider_for};
 use anyhow::Result;
 use serde_json::json;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub struct LoopInput {
@@ -67,17 +68,51 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 &format!("impl-{}", (attempt as usize % input.cfg.workers) + 1),
             )?;
 
+            let implementer_payload = parse_prompt_json(&packet::build_implementer_prompt(
+                &projected,
+                &events,
+                task,
+                attempt,
+                &projected.checks_commands,
+            ));
+            let implementer_capsule = json!({
+                "capsule_version": 1,
+                "role": "implementer",
+                "run_id": input.run_id,
+                "task_id": task_id,
+                "attempt": attempt,
+                "payload": implementer_payload
+            });
+            let (implementer_capsule_path, implementer_capsule_sha) = write_capsule(
+                &input.base_dir,
+                &input.run_id,
+                &task_id,
+                attempt,
+                "implementer",
+                &implementer_capsule,
+            )?;
+            let implementer_capsule_file = implementer_capsule_path.display().to_string();
+
             let implementer_res = provider.run(AgentRequest {
                 role: "implementer".to_string(),
                 task_id: task_id.clone(),
                 attempt,
                 worktree_path: worktree.clone(),
-                prompt: packet::build_implementer_prompt(
-                    &projected,
-                    &events,
-                    task,
-                    attempt,
-                    &projected.checks_commands,
+                prompt: json!({
+                    "role": "implementer",
+                    "capsule_file": implementer_capsule_file,
+                    "critical": {
+                        "task_id": task_id,
+                        "attempt": attempt,
+                        "objective": task.objective,
+                        "acceptance": task.acceptance
+                    }
+                })
+                .to_string(),
+                env: capsule_env(
+                    &implementer_capsule_path,
+                    &implementer_capsule_sha,
+                    "implementer",
                 ),
                 timeout: Duration::from_secs(45 * 60),
             })?;
@@ -97,7 +132,8 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                     payload_json: json!({
                         "exit_code": implementer_res.exit_code,
                         "stdout_path": implementer_res.stdout_path,
-                        "stderr_path": implementer_res.stderr_path
+                        "stderr_path": implementer_res.stderr_path,
+                        "capsule_path": implementer_capsule_file
                     }),
                     dedupe_key: None,
                 },
@@ -138,6 +174,39 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 continue;
             }
 
+            let reviewer_id = format!("rev-{}", (attempt as usize % input.cfg.reviewers) + 1);
+            let submission_refs = json!({
+                "work_submitted": {
+                    "stdout_path": implementer_res.stdout_path,
+                    "stderr_path": implementer_res.stderr_path,
+                    "exit_code": implementer_res.exit_code,
+                    "capsule_path": implementer_capsule_file
+                }
+            });
+            let reviewer_payload = parse_prompt_json(&packet::build_reviewer_prompt(
+                &events,
+                task,
+                attempt,
+                &projected.checks_commands,
+                submission_refs,
+            ));
+            let reviewer_capsule = json!({
+                "capsule_version": 1,
+                "role": "reviewer",
+                "run_id": input.run_id,
+                "task_id": task_id,
+                "attempt": attempt,
+                "payload": reviewer_payload
+            });
+            let (reviewer_capsule_path, reviewer_capsule_sha) = write_capsule(
+                &input.base_dir,
+                &input.run_id,
+                &task_id,
+                attempt,
+                "reviewer",
+                &reviewer_capsule,
+            )?;
+            let reviewer_capsule_file = reviewer_capsule_path.display().to_string();
             append_event(
                 store,
                 &input.run_id,
@@ -147,32 +216,28 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                     actor_role: Some("supervisor".to_string()),
                     actor_id: Some("supervisor-1".to_string()),
                     attempt: Some(attempt),
-                    payload_json: json!({"attempt": attempt}),
+                    payload_json: json!({"attempt": attempt, "capsule_path": reviewer_capsule_file}),
                     dedupe_key: None,
                 },
                 input.ndjson_log.as_deref(),
             )?;
-
-            let reviewer_id = format!("rev-{}", (attempt as usize % input.cfg.reviewers) + 1);
-            let submission_refs = json!({
-                "work_submitted": {
-                    "stdout_path": implementer_res.stdout_path,
-                    "stderr_path": implementer_res.stderr_path,
-                    "exit_code": implementer_res.exit_code
-                }
-            });
             let reviewer_res = provider.run(AgentRequest {
                 role: "reviewer".to_string(),
                 task_id: task_id.clone(),
                 attempt,
                 worktree_path: worktree.clone(),
-                prompt: packet::build_reviewer_prompt(
-                    &events,
-                    task,
-                    attempt,
-                    &projected.checks_commands,
-                    submission_refs,
-                ),
+                prompt: json!({
+                    "role": "reviewer",
+                    "capsule_file": reviewer_capsule_file,
+                    "critical": {
+                        "task_id": task_id,
+                        "attempt": attempt,
+                        "objective": task.objective,
+                        "acceptance": task.acceptance
+                    }
+                })
+                .to_string(),
+                env: capsule_env(&reviewer_capsule_path, &reviewer_capsule_sha, "reviewer"),
                 timeout: Duration::from_secs(20 * 60),
             })?;
 
@@ -442,4 +507,41 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
         )?;
         return Ok("run_failed".to_string());
     }
+}
+
+fn parse_prompt_json(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| json!({"raw_prompt": raw}))
+}
+
+fn write_capsule(
+    repo_root: &Path,
+    run_id: &str,
+    task_id: &str,
+    attempt: i64,
+    role: &str,
+    capsule: &serde_json::Value,
+) -> Result<(PathBuf, String)> {
+    let path = run_artifact_dir(repo_root, run_id)
+        .join("capsules")
+        .join(task_id)
+        .join(format!("attempt{attempt}"))
+        .join(format!("{role}.json"));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let raw = serde_json::to_string_pretty(capsule)?;
+    fs::write(&path, &raw)?;
+    let digest = sha256_hex(&raw);
+    Ok((path, digest))
+}
+
+fn capsule_env(path: &Path, digest: &str, role: &str) -> Vec<(String, String)> {
+    vec![
+        (
+            "WHENCE_CAPSULE_FILE".to_string(),
+            path.display().to_string(),
+        ),
+        ("WHENCE_CAPSULE_SHA256".to_string(), digest.to_string()),
+        ("WHENCE_CAPSULE_ROLE".to_string(), role.to_string()),
+    ]
 }

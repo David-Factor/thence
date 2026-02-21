@@ -5,6 +5,61 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+const PLAN_TRANSLATOR_SPL_REFERENCE: &str = r#"SPL QUICK REFERENCE (whence translator subset)
+
+- Facts: (given atom) or (given (pred arg1 arg2))
+- Strict rule: (always label body head)
+- Defeasible rule: (normally label body head)
+- Defeater: (except label body head)
+- Priority: (prefer winner loser)
+- Metadata: (meta label (key "value"))
+- Conjunction: (and lit1 lit2 ...)
+- Negation: (not literal)
+
+Canonical orchestration facts required in translated SPL:
+- (given (task <id>))
+- (given (depends-on <task-id> <dep-id>)) for each dependency edge
+
+Constraints:
+- Keep the plan self-contained.
+- Do NOT use (import ...).
+- Task ids must be stable and match tasks[].id exactly.
+"#;
+
+pub fn build_plan_translator_prompt(
+    repo_root: &Path,
+    plan_file: &Path,
+    markdown: &str,
+    default_checks: &[String],
+    agents_md: Option<String>,
+    claude_md: Option<String>,
+) -> String {
+    let payload = json!({
+        "role": "plan-translator",
+        "instruction": "Translate the specification into a self-contained SPL plan and a normalized task graph JSON. Return ONLY JSON.",
+        "output_contract": {
+            "required_keys": ["spl", "tasks"],
+            "tasks_item_keys": ["id", "objective", "acceptance", "dependencies", "checks"],
+            "task_id_charset": "[A-Za-z0-9_-]+",
+            "constraints": [
+                "spl must be valid spindle SPL",
+                "no import directives",
+                "every tasks[].id appears as (given (task <id>)) fact",
+                "every dependency edge appears as (given (depends-on <task> <dep>)) fact",
+                "dependencies must reference existing task ids"
+            ]
+        },
+        "repo_root": repo_root,
+        "plan_file": plan_file,
+        "default_checks": default_checks,
+        "spl_reference": PLAN_TRANSLATOR_SPL_REFERENCE,
+        "spec_markdown": markdown,
+        "agents_md": agents_md,
+        "claude_md": claude_md
+    });
+    payload.to_string()
+}
+
 pub fn build_checks_proposer_prompt(
     repo_root: &Path,
     plan_file: &Path,

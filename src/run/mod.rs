@@ -101,6 +101,105 @@ fn default_check_timeout_secs() -> u64 {
     10 * 60
 }
 
+fn translated_plan_path(run_dir: &Path) -> PathBuf {
+    run_dir.join("translated_plan.json")
+}
+
+fn frozen_spec_path(run_dir: &Path) -> PathBuf {
+    run_dir.join("spec.md")
+}
+
+fn write_frozen_spec(run_dir: &Path, markdown: &str) -> Result<PathBuf> {
+    let path = frozen_spec_path(run_dir);
+    std::fs::write(&path, markdown).with_context(|| format!("write frozen spec {}", path.display()))?;
+    Ok(path)
+}
+
+fn read_spec_markdown(run_dir: &Path, plan_path: &Path) -> Result<String> {
+    let frozen = frozen_spec_path(run_dir);
+    if frozen.exists() {
+        return fs::read_to_string(&frozen)
+            .with_context(|| format!("read frozen spec {}", frozen.display()));
+    }
+    fs::read_to_string(plan_path)
+        .with_context(|| format!("read plan file {}", plan_path.display()))
+}
+
+fn translate_spec_with_agent(
+    cfg: &RunConfig,
+    repo_root: &Path,
+    plan_file: &Path,
+    markdown: &str,
+    run_dir: &Path,
+) -> Result<(translator::TranslatedPlan, crate::workers::provider::AgentResult)> {
+    let provider = provider_for(&cfg.agent, &cfg.agent_cmd)?;
+    let prompt = packet::build_plan_translator_prompt(
+        repo_root,
+        plan_file,
+        markdown,
+        &default_checks(),
+        read_optional_file(&repo_root.join("AGENTS.md")),
+        read_optional_file(&repo_root.join("CLAUDE.md")),
+    );
+    let worktree = run_dir.join("plan-translation").join("attempt1");
+    fs::create_dir_all(&worktree)?;
+    let res = provider.run(AgentRequest {
+        role: "plan-translator".to_string(),
+        task_id: "__plan__".to_string(),
+        attempt: 1,
+        worktree_path: worktree,
+        prompt,
+        env: Vec::new(),
+        timeout: Duration::from_secs(20 * 60),
+    })?;
+    if res.exit_code != 0 {
+        bail!(
+            "plan-translator exited non-zero (exit_code={}); see logs: stdout={} stderr={}",
+            res.exit_code,
+            res.stdout_path.display(),
+            res.stderr_path.display()
+        );
+    }
+    let structured = res
+        .structured_output
+        .as_ref()
+        .ok_or_else(|| anyhow!("plan-translator did not return structured JSON output"))?;
+    let translated = translator::parse_translated_plan_output(structured, &default_checks())?;
+    Ok((translated, res))
+}
+
+fn register_translated_tasks(
+    store: &EventStore,
+    run_id: &str,
+    cfg: &RunConfig,
+    translated: &translator::TranslatedPlan,
+    ndjson_log: Option<&Path>,
+) -> Result<()> {
+    for t in &translated.tasks {
+        append_event(
+            store,
+            run_id,
+            &NewEvent {
+                event_type: "task_registered".to_string(),
+                task_id: Some(t.id.clone()),
+                actor_role: None,
+                actor_id: None,
+                attempt: None,
+                payload_json: json!({
+                    "task_id": t.id,
+                    "objective": t.objective,
+                    "acceptance": t.acceptance,
+                    "dependencies": t.dependencies,
+                    "checks": if cfg.trust_plan_checks { t.checks.clone() } else { default_checks() }
+                }),
+                dedupe_key: Some(format!("task_registered:{}", t.id)),
+            },
+            ndjson_log,
+        )?;
+    }
+    Ok(())
+}
+
 pub fn execute_run(cmd: RunCommand) -> Result<()> {
     let db = cmd.state_db.clone().unwrap_or_else(default_state_db);
     let store = EventStore::open(&db)?;
@@ -119,6 +218,7 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
     let run_dir = run_artifact_dir(&repo_root, &run_id);
     std::fs::create_dir_all(&run_dir)?;
     let spl_path = run_dir.join("plan.spl");
+    let translated_path = translated_plan_path(&run_dir);
 
     let plan_sha256 = sha256_hex(&markdown);
     let cfg = RunConfig {
@@ -171,24 +271,28 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         cmd.log.as_deref(),
     )?;
 
-    let translated = match translator::translate_markdown_to_spl(&markdown, &default_checks()) {
-        Ok(t) => t,
-        Err(e) => {
-            let qid = "spec-q-translate";
-            append_event(
-                &store,
-                &run_id,
-                &NewEvent::simple(
-                    "spec_question_opened",
-                    json!({"question_id": qid, "question": format!("Plan translation failed: {e}")}),
-                ),
-                cmd.log.as_deref(),
-            )?;
-            pause_for_question(&store, &run_id, qid, cmd.log.as_deref())?;
-            bail!("run paused due to translation failure")
-        }
-    };
-    std::fs::write(&spl_path, &translated.spl)?;
+    let (translated, translation_res) =
+        match translate_spec_with_agent(&cfg, &repo_root, &cmd.plan_file, &markdown, &run_dir) {
+            Ok(result) => result,
+            Err(e) => {
+                let qid = "spec-q-translate";
+                append_event(
+                    &store,
+                    &run_id,
+                    &NewEvent::simple(
+                        "spec_question_opened",
+                        json!({"question_id": qid, "question": format!("Plan translation failed: {e}")}),
+                    ),
+                    cmd.log.as_deref(),
+                )?;
+                pause_for_question(&store, &run_id, qid, cmd.log.as_deref())?;
+                bail!("run paused due to translation failure")
+            }
+        };
+    std::fs::write(&spl_path, &translated.spl)
+        .with_context(|| format!("write translated SPL {}", spl_path.display()))?;
+    translator::save_translated_plan(&translated_path, &translated)?;
+    let frozen_spec = write_frozen_spec(&run_dir, &markdown)?;
     if let Some(path) = cmd.debug_dump_spl.as_ref() {
         std::fs::write(path, &translated.spl)?;
     }
@@ -200,7 +304,12 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
             "plan_translated",
             json!({
                 "spl_path": spl_path,
-                "task_count": translated.tasks.len()
+                "translated_plan_path": translated_path,
+                "frozen_spec_path": frozen_spec,
+                "task_count": translated.tasks.len(),
+                "source": "agent",
+                "translator_stdout_path": translation_res.stdout_path,
+                "translator_stderr_path": translation_res.stderr_path
             }),
         ),
         cmd.log.as_deref(),
@@ -266,28 +375,7 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
     };
     resolve_checks_configuration(&store, &run_id, &cfg, &checks_input)?;
 
-    for t in &translated.tasks {
-        append_event(
-            &store,
-            &run_id,
-            &NewEvent {
-                event_type: "task_registered".to_string(),
-                task_id: Some(t.id.clone()),
-                actor_role: None,
-                actor_id: None,
-                attempt: None,
-                payload_json: json!({
-                    "task_id": t.id,
-                    "objective": t.objective,
-                    "acceptance": t.acceptance,
-                    "dependencies": t.dependencies,
-                    "checks": if cfg.trust_plan_checks { t.checks.clone() } else { default_checks() }
-                }),
-                dedupe_key: Some(format!("task_registered:{}", t.id)),
-            },
-            cmd.log.as_deref(),
-        )?;
-    }
+    register_translated_tasks(&store, &run_id, &cfg, &translated, cmd.log.as_deref())?;
 
     continue_run(&store, &run_id, cmd.log)
 }
@@ -572,7 +660,7 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
     }
 
     if !state.spec_approved {
-        rerun_spec_gate_on_resume(store, run_id, &plan_path, log.as_deref())?;
+        rerun_spec_gate_on_resume(store, run_id, &run, &cfg, &repo_root, log.as_deref())?;
         let events_after_spec = store.list_events(run_id)?;
         let state_after_spec = RunProjection::replay(&events_after_spec);
         if !state_after_spec.open_questions.is_empty() {
@@ -600,7 +688,7 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
             run_id,
             &cfg,
             &repo_root,
-            &plan_path,
+            &run,
             log.as_deref(),
         )?;
         let events_after_gate = store.list_events(run_id)?;
@@ -622,12 +710,12 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
     }
 
     if state.spec_approved {
-        ensure_tasks_registered_on_resume(store, run_id, &run, &cfg, log.as_deref())?;
+        ensure_tasks_registered_on_resume(store, run_id, &run, &cfg, &repo_root, log.as_deref())?;
     }
 
     let spl_path = PathBuf::from(&run.spl_plan_path);
     if !spl_path.exists() {
-        regenerate_plan_spl_if_missing(store, run_id, &run, log.as_deref())?;
+        regenerate_plan_spl_if_missing(store, run_id, &cfg, &repo_root, &run, log.as_deref())?;
     }
 
     let plan_spl = std::fs::read_to_string(&run.spl_plan_path)
@@ -807,50 +895,114 @@ fn resolve_checks_configuration(
     propose_checks_and_pause(store, run_id, cfg, input)
 }
 
-fn rerun_spec_gate_on_resume(
+fn load_or_translate_plan_for_run(
     store: &EventStore,
     run_id: &str,
-    plan_file: &Path,
+    run: &RunRow,
+    cfg: &RunConfig,
+    repo_root: &Path,
     ndjson_log: Option<&Path>,
-) -> Result<()> {
-    let markdown = fs::read_to_string(plan_file)
-        .with_context(|| format!("read plan file {}", plan_file.display()))?;
-    let translated = match translator::translate_markdown_to_spl(&markdown, &default_checks()) {
-        Ok(t) => t,
-        Err(err) => {
-            let qid = "spec-q-translate";
+) -> Result<(String, translator::TranslatedPlan)> {
+    let run_dir = run_artifact_dir(repo_root, run_id);
+    fs::create_dir_all(&run_dir)?;
+    let plan_path = Path::new(&run.plan_path);
+    let translated_path = translated_plan_path(&run_dir);
+    let (markdown, translated, translated_now) = if translated_path.exists() {
+        let markdown = read_spec_markdown(&run_dir, plan_path)?;
+        if !frozen_spec_path(&run_dir).exists() {
+            write_frozen_spec(&run_dir, &markdown)?;
+        }
+        (
+            markdown,
+            translator::load_translated_plan(&translated_path)?,
+            false,
+        )
+    } else {
+        // When there is no frozen translated plan yet, always translate from the live spec.
+        let markdown = fs::read_to_string(plan_path)
+            .with_context(|| format!("read plan file {}", plan_path.display()))?;
+        let (translated, translation_res) =
+            match translate_spec_with_agent(cfg, repo_root, plan_path, &markdown, &run_dir) {
+                Ok(result) => result,
+                Err(err) => {
+                    let qid = "spec-q-translate";
+                    append_event(
+                        store,
+                        run_id,
+                        &NewEvent::simple(
+                            "spec_question_opened",
+                            json!({"question_id": qid, "question": format!("Plan translation failed: {err}")}),
+                        ),
+                        ndjson_log,
+                    )?;
+                    pause_for_question(store, run_id, qid, ndjson_log)?;
+                    bail!("run paused due to translation failure")
+                }
+            };
+        fs::write(&run.spl_plan_path, &translated.spl)
+            .with_context(|| format!("write translated SPL {}", run.spl_plan_path))?;
+        translator::save_translated_plan(&translated_path, &translated)?;
+        let frozen_spec = write_frozen_spec(&run_dir, &markdown)?;
+        append_event(
+            store,
+            run_id,
+            &NewEvent::simple(
+                "plan_translated",
+                json!({
+                    "spl_path": run.spl_plan_path,
+                    "translated_plan_path": translated_path,
+                    "frozen_spec_path": frozen_spec,
+                    "task_count": translated.tasks.len(),
+                    "source": "resume_translated",
+                    "translator_stdout_path": translation_res.stdout_path,
+                    "translator_stderr_path": translation_res.stderr_path
+                }),
+            ),
+            ndjson_log,
+        )?;
+        (markdown, translated, true)
+    };
+
+    if !Path::new(&run.spl_plan_path).exists() {
+        fs::write(&run.spl_plan_path, &translated.spl)
+            .with_context(|| format!("write regenerated SPL {}", run.spl_plan_path))?;
+        append_event(
+            store,
+            run_id,
+            &NewEvent::simple(
+                "plan_translated",
+                json!({
+                    "spl_path": run.spl_plan_path,
+                    "translated_plan_path": translated_path,
+                    "task_count": translated.tasks.len(),
+                    "source": "resume_regenerated_from_frozen"
+                }),
+            ),
+            ndjson_log,
+        )?;
+    } else {
+        // Ensure in-memory object and on-disk SPL remain aligned with frozen JSON.
+        let on_disk = fs::read_to_string(&run.spl_plan_path)
+            .with_context(|| format!("read SPL plan {}", run.spl_plan_path))?;
+        if on_disk != translated.spl {
+            fs::write(&run.spl_plan_path, &translated.spl)
+                .with_context(|| format!("rewrite SPL from frozen plan {}", run.spl_plan_path))?;
             append_event(
                 store,
                 run_id,
                 &NewEvent::simple(
-                    "spec_question_opened",
-                    json!({"question_id": qid, "question": format!("Plan translation failed: {err}")}),
+                    "plan_translated",
+                    json!({
+                        "spl_path": run.spl_plan_path,
+                        "translated_plan_path": translated_path,
+                        "task_count": translated.tasks.len(),
+                        "source": "resume_reconciled_from_frozen"
+                    }),
                 ),
                 ndjson_log,
             )?;
-            pause_for_question(store, run_id, qid, ndjson_log)?;
-            bail!("run paused due to translation failure")
         }
-    };
-
-    let run = store
-        .get_run(run_id)?
-        .ok_or_else(|| anyhow!("run not found: {run_id}"))?;
-    if let Some(parent) = Path::new(&run.spl_plan_path).parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create SPL parent dir {}", parent.display()))?;
     }
-    fs::write(&run.spl_plan_path, &translated.spl)
-        .with_context(|| format!("write regenerated SPL {}", run.spl_plan_path))?;
-    append_event(
-        store,
-        run_id,
-        &NewEvent::simple(
-            "plan_translated",
-            json!({"spl_path": run.spl_plan_path, "task_count": translated.tasks.len(), "source": "resume_spec_gate"}),
-        ),
-        ndjson_log,
-    )?;
 
     if let Err(err) =
         validate::validate_spl(&translated.spl).and_then(|_| sanity::run_sanity_checks(&translated))
@@ -868,15 +1020,32 @@ fn rerun_spec_gate_on_resume(
         pause_for_question(store, run_id, qid, ndjson_log)?;
         bail!("run paused due to invalid translated plan")
     }
-    append_event(
-        store,
-        run_id,
-        &NewEvent::simple(
-            "plan_validated",
-            json!({"ok": true, "source": "resume_spec_gate"}),
-        ),
-        ndjson_log,
-    )?;
+
+    if translated_now {
+        append_event(
+            store,
+            run_id,
+            &NewEvent::simple(
+                "plan_validated",
+                json!({"ok": true, "source": "resume_translated"}),
+            ),
+            ndjson_log,
+        )?;
+    }
+
+    Ok((markdown, translated))
+}
+
+fn rerun_spec_gate_on_resume(
+    store: &EventStore,
+    run_id: &str,
+    run: &RunRow,
+    cfg: &RunConfig,
+    repo_root: &Path,
+    ndjson_log: Option<&Path>,
+) -> Result<()> {
+    let (markdown, translated) =
+        load_or_translate_plan_for_run(store, run_id, run, cfg, repo_root, ndjson_log)?;
 
     match review_loop::review_spec(&markdown, &translated) {
         review_loop::SpecReviewOutcome::Approved => {
@@ -916,7 +1085,7 @@ fn resolve_checks_configuration_on_resume(
     run_id: &str,
     cfg: &RunConfig,
     repo_root: &Path,
-    plan_file: &Path,
+    run: &RunRow,
     ndjson_log: Option<&Path>,
 ) -> Result<()> {
     if cfg.checks_from_cli {
@@ -953,14 +1122,14 @@ fn resolve_checks_configuration_on_resume(
         }
     }
 
-    let markdown = fs::read_to_string(plan_file)
-        .with_context(|| format!("read plan file {}", plan_file.display()))?;
+    let run_dir = run_artifact_dir(repo_root, run_id);
+    let markdown = read_spec_markdown(&run_dir, Path::new(&run.plan_path))?;
     let translated =
-        crate::plan::translator::translate_markdown_to_spl(&markdown, &default_checks())
-            .context("translate plan for checks proposal on resume")?;
+        translator::load_translated_plan(&translated_plan_path(&run_dir))
+            .context("load translated plan for checks proposal on resume")?;
     let checks_input = ChecksResolutionInput {
         repo_root,
-        plan_file,
+        plan_file: Path::new(&run.plan_path),
         markdown: &markdown,
         translated: &translated,
         ndjson_log,
@@ -971,44 +1140,12 @@ fn resolve_checks_configuration_on_resume(
 fn regenerate_plan_spl_if_missing(
     store: &EventStore,
     run_id: &str,
+    cfg: &RunConfig,
+    repo_root: &Path,
     run: &RunRow,
     ndjson_log: Option<&Path>,
 ) -> Result<()> {
-    let markdown = fs::read_to_string(&run.plan_path)
-        .with_context(|| format!("read plan file {}", run.plan_path))?;
-    let translated = translator::translate_markdown_to_spl(&markdown, &default_checks())
-        .context("translate plan during resume SPL regeneration")?;
-
-    if let Some(parent) = Path::new(&run.spl_plan_path).parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("create SPL parent dir {}", parent.display()))?;
-    }
-    fs::write(&run.spl_plan_path, &translated.spl)
-        .with_context(|| format!("write regenerated SPL {}", run.spl_plan_path))?;
-
-    append_event(
-        store,
-        run_id,
-        &NewEvent::simple(
-            "plan_translated",
-            json!({"spl_path": run.spl_plan_path, "task_count": translated.tasks.len(), "source": "resume_regenerated"}),
-        ),
-        ndjson_log,
-    )?;
-
-    validate::validate_spl(&translated.spl)
-        .and_then(|_| sanity::run_sanity_checks(&translated))
-        .context("validate regenerated SPL on resume")?;
-    append_event(
-        store,
-        run_id,
-        &NewEvent::simple(
-            "plan_validated",
-            json!({"ok": true, "source": "resume_regenerated"}),
-        ),
-        ndjson_log,
-    )?;
-
+    let _ = load_or_translate_plan_for_run(store, run_id, run, cfg, repo_root, ndjson_log)?;
     Ok(())
 }
 
@@ -1017,6 +1154,7 @@ fn ensure_tasks_registered_on_resume(
     run_id: &str,
     run: &RunRow,
     cfg: &RunConfig,
+    repo_root: &Path,
     ndjson_log: Option<&Path>,
 ) -> Result<()> {
     let events = store.list_events(run_id)?;
@@ -1024,32 +1162,18 @@ fn ensure_tasks_registered_on_resume(
         return Ok(());
     }
 
-    let markdown = fs::read_to_string(&run.plan_path)
-        .with_context(|| format!("read plan file {}", run.plan_path))?;
-    let translated = translator::translate_markdown_to_spl(&markdown, &default_checks())
-        .context("translate plan during resume task registration")?;
-    for t in &translated.tasks {
-        append_event(
-            store,
-            run_id,
-            &NewEvent {
-                event_type: "task_registered".to_string(),
-                task_id: Some(t.id.clone()),
-                actor_role: None,
-                actor_id: None,
-                attempt: None,
-                payload_json: json!({
-                    "task_id": t.id,
-                    "objective": t.objective,
-                    "acceptance": t.acceptance,
-                    "dependencies": t.dependencies,
-                    "checks": if cfg.trust_plan_checks { t.checks.clone() } else { default_checks() }
-                }),
-                dedupe_key: Some(format!("task_registered:{}", t.id)),
-            },
-            ndjson_log,
-        )?;
-    }
+    let run_dir = run_artifact_dir(&repo_root, run_id);
+    let translated_path = translated_plan_path(&run_dir);
+    let translated = if translated_path.exists() {
+        translator::load_translated_plan(&translated_path)
+            .context("load translated plan during resume task registration")?
+    } else {
+        // Backward-compatible fallback for runs without translated_plan.json.
+        let (_, translated) =
+            load_or_translate_plan_for_run(store, run_id, run, cfg, repo_root, ndjson_log)?;
+        translated
+    };
+    register_translated_tasks(store, run_id, cfg, &translated, ndjson_log)?;
     Ok(())
 }
 
@@ -1079,6 +1203,7 @@ fn propose_checks_and_pause(
         attempt: 1,
         worktree_path: worktree,
         prompt,
+        env: Vec::new(),
         timeout: Duration::from_secs(10 * 60),
     })?;
     let proposed = res

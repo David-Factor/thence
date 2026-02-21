@@ -11,6 +11,7 @@ pub struct AgentRequest {
     pub attempt: i64,
     pub worktree_path: PathBuf,
     pub prompt: String,
+    pub env: Vec<(String, String)>,
     pub timeout: Duration,
 }
 
