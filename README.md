@@ -2,37 +2,38 @@
 
 `thence` is a spec-driven supervisor for long-horizon coding runs.
 
-It is derived from [hence](https://codeberg.org/anuna/hence), and explores ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and [Hugo O'Connor](https://www.anuna.io/)'s work at the seam between defeasible logic systems and LLM-driven software workflows.
+It is derived from [hence](https://codeberg.org/anuna/hence), and explores ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and [Hugo O'Connor](https://www.anuna.io/)'s work at the seam between defeasible logic systems (rules with defaults and exceptions) and LLM-driven software workflows.
 
 ## Why This Exists
 
-This project comes from a workflow shift:
+Modern models are good enough to be more hands-off if you have a way to keep them grounded as they work.
 
-- models are good enough to be more hands-off, if each step is grounded and verified,
-- the bottleneck is less "can it code?" and more "is the spec right?" plus "is verification right?",
-- verification varies by project, but often ends up hybrid: LLM review plus deterministic checks.
+In practice, the bottleneck isn't "can it code?"; it's "is the spec right?" and "is the verification right?". A lot of engineering work boils down to writing a spec, then running a loop that tells you whether the result actually meets it.
 
-That pattern shows up repeatedly in real work. For example: writing a spec for an OCR verification harness, building it, then using that harness to validate the OCR step itself.
+What works for me is an outer loop: one agent implements from the spec, I run checks, a second agent reviews, and its findings become the next prompt. I only step in when the loop needs a human decision.
 
-`thence` is an outer-loop experiment for that way of working: specs in, implementation/review/check loops out, with resumable event history and explicit gates.
+Good runs also need solid inner loops: project-specific harnesses that turn "is this feature actually working?" into a concrete signal (OCR verification, scrape replays, golden outputs). Those harnesses are often the grounding that makes the outer loop work.
 
-It is also an exploration of the seam from Hugo's work: using defeasible-logic-style orchestration ideas for runtime policy and state transitions, while keeping the user experience simple and markdown-first.
+`thence` exists to mechanize it: specs in, implementation/review/check loops out, with explicit pause points when a human answer is needed and a resumable event history.
+
+It is also an exploration, inspired by Hugo's work, of treating "what can run next?" as policy (defaults, exceptions, priorities) instead of burying it in supervisor control flow, while keeping the UX markdown-first.
 
 ## Under The Hood
 
-`thence` is an event-sourced supervisor loop. Agents do the text-and-code work (translate spec, implement, review). The supervisor does the bookkeeping and scheduling.
+`thence` is an event-sourced supervisor loop. Agents do the text-and-code work (translate spec, implement, review). The supervisor does the bookkeeping, runs the configured checks locally, and decides what to do next.
 
-On start, `thence` translates your `spec.md` into (1) a task list and (2) a small rule file (`plan.spl`) written in Spindle Lisp (SPL), a tiny language for facts and rules. At runtime, `thence` combines that translated plan with built-in policy rules and the current run state.
+On start, `thence` translates your `spec.md` into (1) a task list and (2) a small rule file (`plan.spl`) written in Spindle Lisp (SPL), a tiny language for facts and rules, consumed by the `spindle-rust` reasoner. At runtime, `thence` combines that translated plan with built-in policy rules and the current run state.
 
-On each tick, it replays the run's event log into a current projection, derives policy facts, and asks the Spindle reasoner what is provable right now. Those conclusions are things like "this task is claimable", "this task is closable", or "this task is merge-ready". As new events arrive, the derived facts (and therefore the conclusions) can change. That's the non-monotonic part: new information can change what is runnable next.
+On each tick, it replays the run's event log into a current projection, derives policy facts, and asks the Spindle reasoner what is provable right now. Those conclusions are things like "this task is claimable", "this task is closable", or "this task is merge-ready". As new events arrive, the derived facts (and therefore the conclusions) can change; this is non-monotonic reasoning (new information can change conclusions).
 
-Defeasible logic is a good fit for this domain because software work is mostly defaults with explicit exceptions: "keep going" is the default, but an open question, missing approvals, failing checks, or new findings should override that default. Today `thence` ships a conservative policy built from strict rules (they apply whenever their conditions are true) plus projected lifecycle facts; adding defeasible rules and priorities is the next step.
+Defeasible logic is a good fit for this domain because software work is mostly defaults with explicit exceptions: "keep going" is the default, but an open question, missing approvals, failing checks, or new findings should override that default. It gives you a place to write strict rules (always apply) and defeasible rules (defaults that can be defeated by exceptions), plus priorities between them. Today `thence` ships a conservative policy built from strict rules plus projected lifecycle facts; adding defeasible rules and priorities is the next step.
 
 ### Core Mental Model
 
 ```text
                  +------------------------+
-                 | spec.md + config.toml  |
+                 | spec.md                |
+                 | .thence/config.toml    |
                  +-----------+------------+
                              |
                              v
@@ -42,18 +43,25 @@ Defeasible logic is a good fit for this domain because software work is mostly d
                  +-----------+------------+
                              |
                              v
+  +----------------------+     +----------------------+
+  | codex workers        |     | checks runner        |
+  | implement / review   |     | (shell commands)     |
+  +----------+-----------+     +----------+-----------+
+             \\                   //
+              \\ append events    // append events
+               v                 v
   +----------------------+  replay   +----------------------+
-  | event log (run DB)   +---------> | RunProjection         |
+  | event log (run DB)   +---------> | projected state       |
   | append-only          |           | (current state)       |
   +----------+-----------+           +----------+-----------+
-             ^                                  |
-             | append events                     | facts + plan.spl
-             |                                  v
-  +----------+-----------+           +----------+-----------+
-  | workers (codex)      |           | Spindle policy       |
-  | implement / review   |           | query provable       |
-  | checks               |           | (claimable, etc)     |
-  +----------------------+           +----------+-----------+
+                                               |
+                                               | facts + plan.spl
+                                               v
+                                     +----------+-----------+
+                                     | Spindle policy       |
+                                     | query provable       |
+                                     | (claimable, etc)     |
+                                     +----------+-----------+
                                                |
                                                v
                                      scheduler -> run / pause
@@ -90,7 +98,7 @@ Real run:
 thence run spec.md --checks "cargo check;cargo test"
 ```
 
-Config-first run:
+Config-first run (checks from `.thence/config.toml`):
 
 ```bash
 thence run spec.md
@@ -140,14 +148,16 @@ Checks resolution order:
 
 If neither is set, run start fails with:
 
-`No checks configured. Set --checks or [checks].commands in .thence/config.toml.`
+```text
+No checks configured. Set `--checks` or `[checks].commands` in `.thence/config.toml`.
+```
 
 ## Context Model
 
 Per run:
 
 - Frozen spec path: `<repo>/.thence/runs/<run-id>/spec.md`
-- Capsules carry `spec_ref` with:
+- Each agent request includes `spec_ref` (a stable pointer to the frozen spec) with:
   - `path` to the frozen spec
   - `sha256` of the frozen spec
 
