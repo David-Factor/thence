@@ -2,11 +2,21 @@
 
 `thence` is a spec-driven supervisor for long-horizon coding runs.
 
-It is derived from [hence](https://codeberg.org/anuna/hence), and builds on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and Hugo O'Connor's work on defeasible logic workflows.
+It is derived from [hence](https://codeberg.org/anuna/hence), and explores ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and [Hugo O'Connor](https://www.anuna.io/)'s work at the seam between defeasible logic systems and LLM-driven software workflows.
 
 ## Why This Exists
 
-Specs, implementation, review, and deterministic checks usually fail for process reasons, not model capability alone. `thence` makes that loop explicit and resumable.
+This project comes from a workflow shift:
+
+- models are good enough to be more hands-off, if each step is grounded and verified,
+- the bottleneck is less "can it code?" and more "is the spec right?" plus "is verification right?",
+- verification varies by project, but often ends up hybrid: LLM review plus deterministic checks.
+
+That pattern shows up repeatedly in real work. For example: writing a spec for an OCR verification harness, building it, then using that harness to validate the OCR step itself.
+
+`thence` is an outer-loop experiment for that way of working: specs in, implementation/review/check loops out, with resumable event history and explicit gates.
+
+It is also an exploration of the seam from Hugo's work: using defeasible-logic-style orchestration ideas for runtime policy and state transitions, while keeping the user experience simple and markdown-first.
 
 ## Setup
 
@@ -14,7 +24,7 @@ Prerequisites:
 
 - A repo with a markdown spec file
 - Rust toolchain (for building from source) or the install script
-- Codex CLI available in `PATH` for real runs
+- Codex CLI available in `PATH` for non-simulated runs
 
 Install:
 
@@ -57,7 +67,7 @@ thence answer --run <run-id> --question <question-id> --text "..."
 thence resume --run <run-id>
 ```
 
-## Minimal Config
+## Minimal Configuration
 
 Create `.thence/config.toml`:
 
@@ -85,7 +95,9 @@ Checks resolution order:
 1. `--checks`
 2. `[checks].commands` in `.thence/config.toml`
 
-If neither is set, run start fails.
+If neither is set, run start fails with:
+
+`No checks configured. Set --checks or [checks].commands in .thence/config.toml.`
 
 ## Context Model
 
@@ -96,15 +108,15 @@ Per run:
   - `path` to the frozen spec
   - `sha256` of the frozen spec
 
-This keeps task-level prompts compact while preserving a stable full-spec reference.
+This keeps task prompts compact while preserving a stable full-spec reference.
 
 ## Worktrees
 
-Per attempt worktrees are created at:
+Per-attempt worktrees are created at:
 
 - `<repo>/.thence/runs/<run-id>/worktrees/thence/<task-id>/v<attempt>/<worker-id>`
 
-Worktrees are retained for debugging/audit and are not auto-cleaned in this release.
+Worktrees are retained for debugging and audit in this release.
 
 Manual cleanup:
 
@@ -114,7 +126,7 @@ rm -rf .thence/runs/<run-id>/worktrees
 
 ## Roadmap
 
-- Richer rules/policy modeling
+- Richer rule/policy modeling
 - Better parallelism controls
 - Lifecycle hooks
 - Merge queue integration
