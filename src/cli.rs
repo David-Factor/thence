@@ -1,6 +1,9 @@
 use crate::run;
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
+use std::fs;
+use std::io;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -10,16 +13,16 @@ use std::path::PathBuf;
     long_about = "thence translates a markdown spec into an internal plan, executes implementer/reviewer/checks loops, and records resumable run state."
 )]
 #[command(arg_required_else_help = true)]
-#[command(
-    after_long_help = "Examples:
+#[command(after_long_help = "Examples:
   thence run spec.md --agent codex --checks \"cargo check;cargo test\"
   thence questions --run <RUN_ID>
   thence answer --run <RUN_ID> --question <QUESTION_ID> --text \"...\"
   thence resume --run <RUN_ID>
+  thence completion zsh > ~/.zsh/completions/_thence
+  thence man > thence.1
 
 Docs: https://github.com/David-Factor/thence#readme
-Issues: https://github.com/David-Factor/thence/issues"
-)]
+Issues: https://github.com/David-Factor/thence/issues")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -32,13 +35,11 @@ enum Commands {
         long_about = "Start a supervised run from a markdown spec. thence translates the spec to an internal plan, executes implementer/reviewer attempts, runs deterministic checks, and records resumable state."
     )]
     #[command(arg_required_else_help = true)]
-    #[command(
-        after_long_help = "Examples:
+    #[command(after_long_help = "Examples:
   thence run spec.md
   thence run spec.md --agent codex --checks \"cargo check;cargo test\"
   thence run spec.md --reconfigure-checks
-  thence run spec.md --agent-cmd \"./scripts/agent-codex.sh\""
-    )]
+  thence run spec.md --agent-cmd \"./scripts/agent-codex.sh\"")]
     Run {
         #[arg(value_name = "PLAN_FILE", help = "Path to markdown spec file")]
         plan_file: PathBuf,
@@ -84,7 +85,11 @@ enum Commands {
             help = "Resume flow via run command (prefer `thence resume --run <RUN_ID>`)"
         )]
         resume: bool,
-        #[arg(long, value_name = "RUN_ID", help = "Explicit run ID for new/resumed run")]
+        #[arg(
+            long,
+            value_name = "RUN_ID",
+            help = "Explicit run ID for new/resumed run"
+        )]
         run_id: Option<String>,
         #[arg(
             long,
@@ -97,10 +102,7 @@ enum Commands {
             help = "Allow run completion when some tasks terminal-fail but others succeed"
         )]
         allow_partial_completion: bool,
-        #[arg(
-            long,
-            help = "Trust per-task checks returned by plan translator"
-        )]
+        #[arg(long, help = "Trust per-task checks returned by plan translator")]
         trust_plan_checks: bool,
         #[arg(long, help = "Enable interactive mode for supporting agent adapters")]
         interactive: bool,
@@ -143,10 +145,8 @@ enum Commands {
     },
     #[command(about = "List unresolved questions for a run")]
     #[command(arg_required_else_help = true)]
-    #[command(
-        after_long_help = "Example:
-  thence questions --run <RUN_ID>"
-    )]
+    #[command(after_long_help = "Example:
+  thence questions --run <RUN_ID>")]
     Questions {
         #[arg(long, value_name = "RUN_ID", help = "Run ID to inspect")]
         run: String,
@@ -159,10 +159,8 @@ enum Commands {
     },
     #[command(about = "Answer a question opened during a run")]
     #[command(arg_required_else_help = true)]
-    #[command(
-        after_long_help = "Example:
-  thence answer --run <RUN_ID> --question <QUESTION_ID> --text \"approve\""
-    )]
+    #[command(after_long_help = "Example:
+  thence answer --run <RUN_ID> --question <QUESTION_ID> --text \"approve\"")]
     Answer {
         #[arg(long, value_name = "RUN_ID", help = "Run ID that owns the question")]
         run: String,
@@ -179,10 +177,8 @@ enum Commands {
     },
     #[command(about = "Resume a paused or interrupted run")]
     #[command(arg_required_else_help = true)]
-    #[command(
-        after_long_help = "Example:
-  thence resume --run <RUN_ID>"
-    )]
+    #[command(after_long_help = "Example:
+  thence resume --run <RUN_ID>")]
     Resume {
         #[arg(long, value_name = "RUN_ID", help = "Run ID to resume")]
         run: String,
@@ -195,10 +191,8 @@ enum Commands {
     },
     #[command(about = "Inspect current state for a run")]
     #[command(arg_required_else_help = true)]
-    #[command(
-        after_long_help = "Example:
-  thence inspect --run <RUN_ID>"
-    )]
+    #[command(after_long_help = "Example:
+  thence inspect --run <RUN_ID>")]
     Inspect {
         #[arg(long, value_name = "RUN_ID", help = "Run ID to inspect")]
         run: String,
@@ -208,6 +202,34 @@ enum Commands {
             help = "Path to state DB (default: $XDG_STATE_HOME/thence/state.db)"
         )]
         state_db: Option<PathBuf>,
+    },
+    #[command(
+        about = "Generate shell completion script",
+        long_about = "Generate shell completion script for your shell. Redirect output to your shell completion directory."
+    )]
+    #[command(arg_required_else_help = true)]
+    #[command(after_long_help = "Examples:
+  thence completion bash > ~/.local/share/bash-completion/completions/thence
+  thence completion zsh > ~/.zsh/completions/_thence
+  thence completion fish > ~/.config/fish/completions/thence.fish")]
+    Completion {
+        #[arg(value_enum, value_name = "SHELL", help = "Target shell")]
+        shell: Shell,
+    },
+    #[command(
+        about = "Generate a man page",
+        long_about = "Generate a roff man page for thence."
+    )]
+    #[command(after_long_help = "Examples:
+  thence man > thence.1
+  thence man --output docs/thence.1")]
+    Man {
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Write man page to file (stdout when omitted)"
+        )]
+        output: Option<PathBuf>,
     },
 }
 
@@ -278,5 +300,25 @@ pub fn run() -> Result<()> {
             run: run_id,
             state_db,
         } => run::inspect_run(&run_id, state_db),
+        Commands::Completion { shell } => {
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_string();
+            clap_complete::generate(shell, &mut cmd, name, &mut io::stdout());
+            Ok(())
+        }
+        Commands::Man { output } => {
+            let man = clap_mangen::Man::new(Cli::command());
+            match output {
+                Some(path) => {
+                    let mut bytes = Vec::new();
+                    man.render(&mut bytes)?;
+                    fs::write(path, bytes)?;
+                }
+                None => {
+                    man.render(&mut io::stdout())?;
+                }
+            }
+            Ok(())
+        }
     }
 }

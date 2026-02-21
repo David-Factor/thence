@@ -1,6 +1,6 @@
 [package]
 name = "thence"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "LGPL-3.0-or-later"
 
@@ -8,6 +8,8 @@ license = "LGPL-3.0-or-later"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+clap_mangen = "0.2"
 rusqlite = { version = "0.33", features = ["bundled", "chrono"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

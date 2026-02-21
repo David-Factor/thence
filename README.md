@@ -121,6 +121,41 @@ thence resume --run <run-id>
 thence inspect --run <run-id>
 ```
 
+## CLI Help and Discovery
+
+`thence` follows a command-first CLI model:
+
+- `thence --help` for top-level overview
+- `thence <command> --help` for command-specific guidance and examples
+- `thence --version` for installed version
+
+The CLI help style is intentionally aligned with [CLIG](https://clig.dev/): concise default guidance, detailed per-command help, examples, and discoverable support links.
+
+Generate shell completions:
+
+```bash
+# bash
+thence completion bash > ~/.local/share/bash-completion/completions/thence
+
+# zsh
+thence completion zsh > ~/.zsh/completions/_thence
+
+# fish
+thence completion fish > ~/.config/fish/completions/thence.fish
+```
+
+Generate a man page:
+
+```bash
+thence man > thence.1
+```
+
+or write directly:
+
+```bash
+thence man --output docs/thence.1
+```
+
 ## Configuration
 
 ### Checks
