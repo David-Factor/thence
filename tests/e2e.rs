@@ -8,6 +8,12 @@ fn test_run_id(prefix: &str) -> String {
     format!("{}-{}", prefix, uuid::Uuid::new_v4())
 }
 
+fn write_repo_config(repo_root: &std::path::Path, body: &str) {
+    let path = repo_root.join(".thence").join("config.toml");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, body).unwrap();
+}
+
 #[test]
 fn end_to_end_happy_path_completes() {
     let tmp = tempdir().unwrap();
@@ -26,8 +32,7 @@ fn end_to_end_happy_path_completes() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -37,10 +42,6 @@ fn end_to_end_happy_path_completes() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -75,8 +76,7 @@ fn prose_spec_translates_and_completes() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -86,10 +86,6 @@ fn prose_spec_translates_and_completes() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -97,6 +93,185 @@ fn prose_spec_translates_and_completes() {
     let events = store.list_events(&run_id).unwrap();
     assert!(events.iter().any(|e| e.event_type == "plan_translated"));
     assert!(events.iter().any(|e| e.event_type == "run_completed"));
+}
+
+#[test]
+fn config_only_checks_resolves_without_question_pause() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: implement feature").unwrap();
+    write_repo_config(
+        tmp.path(),
+        r#"
+version = 1
+[checks]
+commands = ["true"]
+"#,
+    );
+
+    let run_id = test_run_id("config-checks");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: None,
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    assert!(events.iter().any(|e| e.event_type == "checks_approved"));
+    assert!(
+        events
+            .iter()
+            .all(|e| e.event_type != "checks_question_opened")
+    );
+    assert!(events.iter().all(|e| e.event_type != "checks_proposed"));
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+}
+
+#[test]
+fn cli_checks_override_config_checks() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: implement feature").unwrap();
+    write_repo_config(
+        tmp.path(),
+        r#"
+version = 1
+[checks]
+commands = ["false"]
+"#,
+    );
+
+    let run_id = test_run_id("cli-over-config");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    let checks_event = events
+        .iter()
+        .find(|e| e.event_type == "checks_approved")
+        .expect("missing checks_approved");
+    let commands = checks_event
+        .payload_json
+        .get("commands")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(commands, vec![serde_json::json!("true")]);
+}
+
+#[test]
+fn non_codex_agent_is_rejected() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    fs::write(&plan_path, "- [ ] task-a: implement feature").unwrap();
+
+    let err = execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "claude".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: Some("true".to_string()),
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(test_run_id("bad-agent")),
+        state_db: Some(tmp.path().join("state.db")),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("only `codex` supported in this version"));
+}
+
+#[test]
+fn reviewer_prompt_override_is_written_to_reviewer_capsule() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    fs::write(&plan_path, "- [ ] task-a: implement feature").unwrap();
+    write_repo_config(
+        tmp.path(),
+        r#"
+version = 1
+[checks]
+commands = ["true"]
+[prompts]
+reviewer = "Return strict JSON with approved/findings only."
+"#,
+    );
+
+    let run_id = test_run_id("reviewer-prompt");
+    execute_run(RunCommand {
+        plan_file: plan_path.clone(),
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: None,
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let events = EventStore::open(&plan_path.parent().unwrap().join("state.db"))
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    let capsule_path = events
+        .iter()
+        .find(|e| e.event_type == "review_requested")
+        .and_then(|e| e.payload_json.get("capsule_path"))
+        .and_then(|v| v.as_str())
+        .expect("missing reviewer capsule path");
+    let raw = fs::read_to_string(capsule_path).unwrap();
+    assert!(raw.contains("Return strict JSON with approved/findings only."));
 }
 
 #[test]
@@ -113,8 +288,7 @@ fn ambiguity_pauses_and_can_resume() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -124,10 +298,6 @@ fn ambiguity_pauses_and_can_resume() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("paused"));
@@ -192,8 +362,7 @@ fn review_question_uses_returned_question_id() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -203,10 +372,6 @@ fn review_question_uses_returned_question_id() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("paused"));
@@ -228,8 +393,7 @@ fn implementer_nonzero_exit_blocks_review_and_close() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -239,10 +403,6 @@ fn implementer_nonzero_exit_blocks_review_and_close() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -276,8 +436,7 @@ fn reviewer_missing_output_fails_closed() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -287,10 +446,6 @@ fn reviewer_missing_output_fails_closed() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -368,6 +523,13 @@ esac
         perms.set_mode(0o755);
         fs::set_permissions(&agent_path, perms).unwrap();
     }
+    write_repo_config(
+        tmp.path(),
+        &format!(
+            "version = 1\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
+            agent_path.display()
+        ),
+    );
 
     let run_id = test_run_id("findings-forward");
     execute_run(RunCommand {
@@ -376,8 +538,7 @@ esac
         workers: 1,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: false,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -387,10 +548,6 @@ esac
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: Some(format!("bash {}", agent_path.display())),
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -454,8 +611,7 @@ fn duplicate_sanitized_task_ids_pause_translation() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -465,10 +621,6 @@ fn duplicate_sanitized_task_ids_pause_translation() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("translation failure"));
@@ -501,8 +653,7 @@ fn resume_with_open_question_uses_real_question_id() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -512,10 +663,6 @@ fn resume_with_open_question_uses_real_question_id() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     });
 
     let err = resume_run(&run_id, Some(db_path.clone())).unwrap_err();
@@ -538,53 +685,31 @@ fn resume_with_open_question_uses_real_question_id() {
 }
 
 #[test]
-fn checks_gate_pauses_then_accept_resume() {
+fn missing_checks_fails_fast() {
     let tmp = tempdir().unwrap();
     let plan_path = tmp.path().join("plan.md");
     let db_path = tmp.path().join("state.db");
     fs::write(&plan_path, "- [ ] task-a: implement feature").unwrap();
 
-    let run_id = test_run_id("checks-gate");
     let err = execute_run(RunCommand {
-        plan_file: plan_path.clone(),
+        plan_file: plan_path,
         agent: "codex".to_string(),
         workers: 2,
         reviewers: 1,
         checks: None,
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
-        run_id: Some(run_id.clone()),
-        state_db: Some(db_path.clone()),
+        run_id: Some(test_run_id("checks-gate")),
+        state_db: Some(db_path),
         allow_partial_completion: false,
         trust_plan_checks: false,
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap_err();
-    assert!(format!("{err}").contains("checks approval"));
-
-    answer_question(&run_id, "checks-q-1", "accept", Some(db_path.clone())).unwrap();
-    resume_run(&run_id, Some(db_path.clone())).unwrap();
-
-    let store = EventStore::open(&db_path).unwrap();
-    let events = store.list_events(&run_id).unwrap();
-    assert!(events.iter().any(|e| e.event_type == "checks_proposed"));
-    assert!(events.iter().any(|e| e.event_type == "checks_approved"));
-    assert!(events.iter().any(|e| e.event_type == "run_completed"));
-
-    let checks_file = plan_path
-        .parent()
-        .unwrap()
-        .join(".thence")
-        .join("checks.json");
-    assert!(checks_file.exists());
+    assert!(format!("{err}").contains("No checks configured"));
 }
 
 #[test]
@@ -601,8 +726,7 @@ fn translation_pause_resume_regenerates_spl_and_completes() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -612,10 +736,6 @@ fn translation_pause_resume_regenerates_spl_and_completes() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("translation failure"));
@@ -648,7 +768,7 @@ fn resume_retranslates_when_translated_plan_missing() {
     let tmp = tempdir().unwrap();
     let plan_path = tmp.path().join("plan.md");
     let db_path = tmp.path().join("state.db");
-    fs::write(&plan_path, "- [ ] task-a: one").unwrap();
+    fs::write(&plan_path, "- [ ] task-a: clarify behavior ???").unwrap();
 
     let run_id = test_run_id("resume-missing-translated");
     let err = execute_run(RunCommand {
@@ -656,9 +776,8 @@ fn resume_retranslates_when_translated_plan_missing() {
         agent: "codex".to_string(),
         workers: 2,
         reviewers: 1,
-        checks: None,
-        reconfigure_checks: false,
-        no_checks_file: false,
+        checks: Some("true".to_string()),
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -668,15 +787,10 @@ fn resume_retranslates_when_translated_plan_missing() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap_err();
-    assert!(format!("{err}").contains("checks approval"));
-
-    answer_question(&run_id, "checks-q-1", "accept", Some(db_path.clone())).unwrap();
+    assert!(format!("{err}").contains("paused"));
+    answer_question(&run_id, "spec-q-1", "clarified", Some(db_path.clone())).unwrap();
 
     let translated_path = plan_path
         .parent()
@@ -698,6 +812,97 @@ fn resume_retranslates_when_translated_plan_missing() {
 }
 
 #[test]
+fn resume_refreshes_agent_command_before_initial_translation() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    let agent_path = tmp.path().join("agent.sh");
+    fs::write(&plan_path, "- [ ] task-a: implement feature").unwrap();
+    write_repo_config(
+        tmp.path(),
+        r#"
+version = 1
+[agent]
+provider = "codex"
+command = "missing-codex-command"
+[checks]
+commands = ["true"]
+"#,
+    );
+
+    let run_id = test_run_id("refresh-agent-command");
+    let err = execute_run(RunCommand {
+        plan_file: plan_path.clone(),
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: None,
+        simulate: false,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap_err();
+    assert!(format!("{err}").contains("paused"));
+
+    fs::write(
+        &agent_path,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+case "${THENCE_ROLE:-}" in
+  plan-translator)
+    cat > "${THENCE_RESULT_FILE}" <<'JSON'
+{"spl":"(given (task task-a))\n(given (ready task-a))\n","tasks":[{"id":"task-a","objective":"implement feature","acceptance":"Complete objective: implement feature","dependencies":[],"checks":["true"]}]}
+JSON
+    ;;
+  implementer) echo '{"submitted":true}' > "${THENCE_RESULT_FILE}" ;;
+  reviewer) echo '{"approved":true,"findings":[]}' > "${THENCE_RESULT_FILE}" ;;
+  *) echo '{"submitted":true}' > "${THENCE_RESULT_FILE}" ;;
+esac
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&agent_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&agent_path, perms).unwrap();
+    }
+    write_repo_config(
+        tmp.path(),
+        &format!(
+            "version = 1\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
+            agent_path.display()
+        ),
+    );
+
+    answer_question(&run_id, "spec-q-translate", "retry", Some(db_path.clone())).unwrap();
+    resume_run(&run_id, Some(db_path.clone())).unwrap();
+
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+    let translate_question_count = events
+        .iter()
+        .filter(|e| {
+            e.event_type == "spec_question_opened"
+                && e.payload_json.get("question_id").and_then(|v| v.as_str())
+                    == Some("spec-q-translate")
+        })
+        .count();
+    assert_eq!(translate_question_count, 1);
+}
+
+#[test]
 fn translate_answer_does_not_bypass_spec_review_gate() {
     let tmp = tempdir().unwrap();
     let plan_path = tmp.path().join("plan.md");
@@ -711,8 +916,7 @@ fn translate_answer_does_not_bypass_spec_review_gate() {
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: true,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -722,10 +926,6 @@ fn translate_answer_does_not_bypass_spec_review_gate() {
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: None,
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap_err();
     assert!(format!("{err}").contains("translation failure"));
@@ -789,6 +989,13 @@ esac
         perms.set_mode(0o755);
         fs::set_permissions(&agent_path, perms).unwrap();
     }
+    write_repo_config(
+        tmp.path(),
+        &format!(
+            "version = 1\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
+            agent_path.display()
+        ),
+    );
 
     let run_id = test_run_id("invalid-reviewer-json");
     execute_run(RunCommand {
@@ -797,8 +1004,7 @@ esac
         workers: 2,
         reviewers: 1,
         checks: Some("true".to_string()),
-        reconfigure_checks: false,
-        no_checks_file: false,
+        simulate: false,
         log: None,
         resume: false,
         run_id: Some(run_id.clone()),
@@ -808,10 +1014,6 @@ esac
         interactive: false,
         attempt_timeout_secs: None,
         debug_dump_spl: None,
-        agent_cmd: Some(format!("bash {}", agent_path.display())),
-        agent_cmd_codex: None,
-        agent_cmd_claude: None,
-        agent_cmd_opencode: None,
     })
     .unwrap();
 
@@ -871,15 +1073,13 @@ fn resume_blocks_when_orphan_attempt_has_fresh_active_lease() {
                 "reviewers": 1,
                 "checks": ["true"],
                 "checks_from_cli": true,
-                "use_checks_file": false,
-                "reconfigure_checks": false,
+                "simulate": true,
                 "allow_partial_completion": false,
                 "trust_plan_checks": false,
                 "interactive": false,
                 "max_attempts": 3,
                 "check_timeout_secs": 60,
-                "attempt_timeout_secs": 120,
-                "agent_cmd": {}
+                "attempt_timeout_secs": 120
             }),
         })
         .unwrap();
@@ -1012,15 +1212,13 @@ fn resume_interrupts_stale_orphan_attempt_lease() {
                 "reviewers": 1,
                 "checks": ["true"],
                 "checks_from_cli": true,
-                "use_checks_file": false,
-                "reconfigure_checks": false,
+                "simulate": true,
                 "allow_partial_completion": false,
                 "trust_plan_checks": false,
                 "interactive": false,
                 "max_attempts": 3,
                 "check_timeout_secs": 60,
-                "attempt_timeout_secs": 120,
-                "agent_cmd": {}
+                "attempt_timeout_secs": 120
             }),
         })
         .unwrap();

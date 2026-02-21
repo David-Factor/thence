@@ -72,21 +72,6 @@ pub fn validate_transition(history: &[EventRow], next: &NewEvent) -> Result<()> 
         }
     }
 
-    if next.event_type == "checks_question_resolved" {
-        let qid = next
-            .payload_json
-            .get("question_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("checks_question_resolved missing question_id"))?;
-        let opened = history.iter().any(|ev| {
-            ev.event_type == "checks_question_opened"
-                && ev.payload_json.get("question_id").and_then(|v| v.as_str()) == Some(qid)
-        });
-        if !opened {
-            bail!("invalid transition: checks question '{qid}' was never opened")
-        }
-    }
-
     if next.event_type == "checks_approved" {
         let has_commands = next
             .payload_json
@@ -100,4 +85,17 @@ pub fn validate_transition(history: &[EventRow], next: &NewEvent) -> Result<()> 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn checks_approved_requires_non_empty_commands() {
+        let next = NewEvent::simple("checks_approved", json!({"commands": []}));
+        let err = validate_transition(&[], &next).unwrap_err();
+        assert!(format!("{err}").contains("requires non-empty commands"));
+    }
 }

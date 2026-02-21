@@ -1,5 +1,6 @@
 pub mod checks;
 pub mod cli;
+pub mod config;
 pub mod events;
 pub mod logging;
 pub mod plan;

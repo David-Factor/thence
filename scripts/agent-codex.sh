@@ -137,6 +137,28 @@ build_prompt() {
   } > "$out"
 }
 
+extract_instruction() {
+  local prompt_file="$1"
+  python3 - "$prompt_file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+instruction = payload.get("instruction")
+if isinstance(instruction, str):
+    print(instruction.strip())
+else:
+    print("")
+PY
+}
+
 main() {
   local schema_file="$TMP_DIR/schema.json"
   local prompt_file="$TMP_DIR/prompt.txt"
@@ -155,8 +177,15 @@ main() {
       ;;
     reviewer)
       schema_reviewer "$schema_file"
+      reviewer_instruction=""
+      if [[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]]; then
+        reviewer_instruction="$(extract_instruction "$PROMPT_FILE")"
+      fi
+      if [[ -z "$reviewer_instruction" ]]; then
+        reviewer_instruction="Review implementation against objective/acceptance and return strict JSON with approved boolean and findings array."
+      fi
       build_prompt "$prompt_file" \
-        "You are the thence reviewer. Review implementation against objective/acceptance and return ONLY JSON with approved boolean and concrete findings array."
+        "You are the thence reviewer. $reviewer_instruction Return ONLY JSON with approved boolean and concrete findings array."
       ;;
     checks-proposer)
       schema_checks_proposer "$schema_file"

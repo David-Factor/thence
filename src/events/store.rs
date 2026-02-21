@@ -57,6 +57,14 @@ impl EventStore {
         Ok(())
     }
 
+    pub fn update_run_config(&self, run_id: &str, config_json: &Value) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET config_json = ?2 WHERE id = ?1",
+            params![run_id, config_json.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn get_run(&self, run_id: &str) -> Result<Option<RunRow>> {
         self.conn
             .query_row(
@@ -146,8 +154,7 @@ impl EventStore {
         let events = self.list_events(run_id)?;
         let mut opened = Vec::new();
         for ev in &events {
-            if (ev.event_type == "spec_question_opened"
-                || ev.event_type == "checks_question_opened")
+            if ev.event_type == "spec_question_opened"
                 && let Some(id) = ev.payload_json.get("question_id").and_then(|v| v.as_str())
             {
                 let text = ev
@@ -161,10 +168,7 @@ impl EventStore {
         }
         let resolved: std::collections::HashSet<String> = events
             .iter()
-            .filter(|ev| {
-                ev.event_type == "spec_question_resolved"
-                    || ev.event_type == "checks_question_resolved"
-            })
+            .filter(|ev| ev.event_type == "spec_question_resolved")
             .filter_map(|ev| {
                 ev.payload_json
                     .get("question_id")

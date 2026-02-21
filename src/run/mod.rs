@@ -9,7 +9,7 @@ use crate::events::store::{EventStore, RunRow};
 use crate::events::{EventRow, NewEvent};
 use crate::logging::ndjson;
 use crate::plan::{review_loop, sanity, translator, validate};
-use crate::workers::provider::{AgentCommandConfig, AgentRequest, provider_for};
+use crate::workers::provider::{AgentRequest, provider_for};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
+const NO_CHECKS_CONFIGURED_ERROR: &str =
+    "No checks configured. Set `--checks` or `[checks].commands` in `.thence/config.toml`.";
+const DEFAULT_REVIEWER_INSTRUCTION: &str = "Review implementation against objective/acceptance.\nReturn strict JSON with: approved (bool), findings (string[]).";
+
 #[derive(Debug, Clone)]
 pub struct RunCommand {
     pub plan_file: PathBuf,
@@ -28,8 +32,7 @@ pub struct RunCommand {
     pub workers: usize,
     pub reviewers: usize,
     pub checks: Option<String>,
-    pub reconfigure_checks: bool,
-    pub no_checks_file: bool,
+    pub simulate: bool,
     pub log: Option<PathBuf>,
     pub resume: bool,
     pub run_id: Option<String>,
@@ -39,10 +42,6 @@ pub struct RunCommand {
     pub interactive: bool,
     pub attempt_timeout_secs: Option<u64>,
     pub debug_dump_spl: Option<PathBuf>,
-    pub agent_cmd: Option<String>,
-    pub agent_cmd_codex: Option<String>,
-    pub agent_cmd_claude: Option<String>,
-    pub agent_cmd_opencode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,14 +49,12 @@ pub struct RunConfig {
     pub agent: String,
     pub workers: usize,
     pub reviewers: usize,
-    #[serde(default = "default_checks")]
+    #[serde(default)]
     pub checks: Vec<String>,
     #[serde(default)]
     pub checks_from_cli: bool,
-    #[serde(default = "default_use_checks_file")]
-    pub use_checks_file: bool,
     #[serde(default)]
-    pub reconfigure_checks: bool,
+    pub simulate: bool,
     pub allow_partial_completion: bool,
     pub trust_plan_checks: bool,
     pub interactive: bool,
@@ -68,15 +65,17 @@ pub struct RunConfig {
     #[serde(default = "default_attempt_timeout_secs")]
     pub attempt_timeout_secs: u64,
     #[serde(default)]
-    pub agent_cmd: AgentCommandConfig,
+    pub reviewer_prompt_override: Option<String>,
+    #[serde(default)]
+    pub agent_command: Option<String>,
 }
 
-struct ChecksResolutionInput<'a> {
-    repo_root: &'a Path,
-    plan_file: &'a Path,
-    markdown: &'a str,
-    translated: &'a translator::TranslatedPlan,
-    ndjson_log: Option<&'a Path>,
+impl RunConfig {
+    pub fn effective_reviewer_instruction(&self) -> &str {
+        self.reviewer_prompt_override
+            .as_deref()
+            .unwrap_or(DEFAULT_REVIEWER_INSTRUCTION)
+    }
 }
 
 fn default_state_db() -> PathBuf {
@@ -91,10 +90,6 @@ fn default_state_db() -> PathBuf {
             .join("state.db");
     }
     PathBuf::from(".thence/state.db")
-}
-
-fn default_use_checks_file() -> bool {
-    true
 }
 
 fn default_max_attempts() -> i64 {
@@ -143,7 +138,7 @@ fn translate_spec_with_agent(
     translator::TranslatedPlan,
     crate::workers::provider::AgentResult,
 )> {
-    let provider = provider_for(&cfg.agent, &cfg.agent_cmd)?;
+    let provider = provider_for(&cfg.agent, cfg.simulate, cfg.agent_command.as_deref())?;
     let prompt = packet::build_plan_translator_prompt(
         repo_root,
         plan_file,
@@ -224,6 +219,11 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         .with_context(|| format!("read plan file {}", cmd.plan_file.display()))?;
     let cli_checks = parse_checks(cmd.checks.as_deref());
     let repo_root = repo_root_for_plan(&cmd.plan_file)?;
+    let repo_cfg = crate::config::load_repo_config(&repo_root)?;
+
+    if cmd.agent != "codex" {
+        bail!("only `codex` supported in this version");
+    }
 
     let run_id = cmd.run_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let run_dir = run_artifact_dir(&repo_root, &run_id);
@@ -236,14 +236,17 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         agent: cmd.agent,
         workers: cmd.workers.max(1),
         reviewers: cmd.reviewers.max(1),
-        checks: if cli_checks.is_empty() {
-            default_checks()
-        } else {
+        checks: if !cli_checks.is_empty() {
             cli_checks.clone()
+        } else {
+            repo_cfg
+                .as_ref()
+                .and_then(|cfg| cfg.checks.as_ref())
+                .map(|checks| checks.commands.clone())
+                .unwrap_or_default()
         },
-        checks_from_cli: cmd.checks.is_some(),
-        use_checks_file: !cmd.no_checks_file,
-        reconfigure_checks: cmd.reconfigure_checks,
+        checks_from_cli: !cli_checks.is_empty(),
+        simulate: cmd.simulate,
         allow_partial_completion: cmd.allow_partial_completion,
         trust_plan_checks: cmd.trust_plan_checks,
         interactive: cmd.interactive,
@@ -252,13 +255,16 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         attempt_timeout_secs: cmd
             .attempt_timeout_secs
             .unwrap_or_else(default_attempt_timeout_secs),
-        agent_cmd: AgentCommandConfig {
-            default_cmd: cmd.agent_cmd,
-            codex: cmd.agent_cmd_codex,
-            claude: cmd.agent_cmd_claude,
-            opencode: cmd.agent_cmd_opencode,
-        },
+        reviewer_prompt_override: repo_cfg
+            .as_ref()
+            .and_then(|cfg| cfg.prompts.as_ref())
+            .and_then(|prompts| prompts.reviewer.clone()),
+        agent_command: repo_cfg
+            .as_ref()
+            .and_then(|cfg| cfg.agent.as_ref())
+            .and_then(|agent| agent.command.clone()),
     };
+    ensure_checks_configured(&cfg.checks)?;
 
     store.create_run(&RunRow {
         id: run_id.clone(),
@@ -385,14 +391,7 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
         }
     }
 
-    let checks_input = ChecksResolutionInput {
-        repo_root: &repo_root,
-        plan_file: &cmd.plan_file,
-        markdown: &markdown,
-        translated: &translated,
-        ndjson_log: cmd.log.as_deref(),
-    };
-    resolve_checks_configuration(&store, &run_id, &cfg, &checks_input)?;
+    resolve_checks_configuration(&store, &run_id, &cfg, cmd.log.as_deref())?;
 
     register_translated_tasks(&store, &run_id, &cfg, &translated, cmd.log.as_deref())?;
 
@@ -424,15 +423,9 @@ pub fn answer_question(
         bail!("question {question_id} is not currently open for run {run_id}")
     }
 
-    let run = store
+    let _run = store
         .get_run(run_id)?
         .ok_or_else(|| anyhow!("run not found: {run_id}"))?;
-    let repo_root = repo_root_for_plan(Path::new(&run.plan_path))?;
-    let events = store.list_events(run_id)?;
-    let is_checks_question = events.iter().any(|ev| {
-        ev.event_type == "checks_question_opened"
-            && ev.payload_json.get("question_id").and_then(|v| v.as_str()) == Some(question_id)
-    });
 
     append_event(
         &store,
@@ -444,82 +437,47 @@ pub fn answer_question(
         None,
     )?;
 
-    if is_checks_question {
-        let commands = if text.trim().eq_ignore_ascii_case("accept") {
-            proposed_checks_for_question(&events, question_id)?
-        } else {
-            let parsed = parse_checks(Some(text));
-            if parsed.is_empty() {
-                bail!("no checks provided in answer override")
-            }
-            parsed
-        };
+    append_event(
+        &store,
+        run_id,
+        &NewEvent::simple(
+            "spec_question_resolved",
+            json!({"question_id": question_id}),
+        ),
+        None,
+    )?;
 
-        append_event(
-            &store,
-            run_id,
-            &NewEvent::simple(
-                "checks_question_resolved",
-                json!({"question_id": question_id}),
-            ),
-            None,
-        )?;
-        append_event(
-            &store,
-            run_id,
-            &NewEvent::simple(
-                "checks_approved",
-                json!({
-                    "commands": commands,
-                    "source": if text.trim().eq_ignore_ascii_case("accept") { "human_accept" } else { "human_override" }
-                }),
-            ),
-            None,
-        )?;
-        crate::checks::config::save_checks_file(&repo_root, &commands, "human_approved")?;
-    } else {
-        append_event(
-            &store,
-            run_id,
-            &NewEvent::simple(
-                "spec_question_resolved",
-                json!({"question_id": question_id}),
-            ),
-            None,
-        )?;
-
-        let is_spec_review_question = is_spec_review_question_id(question_id);
-        if is_spec_review_question {
-            let events_after = store.list_events(run_id)?;
-            let has_spec_approval = events_after
-                .iter()
-                .any(|ev| ev.event_type == "spec_approved");
-            let has_open_spec_questions = events_after.iter().any(|ev| {
-                ev.event_type == "spec_question_opened"
-                    && ev
-                        .payload_json
-                        .get("question_id")
-                        .and_then(|v| v.as_str())
-                        .map(|qid| {
-                            !events_after.iter().any(|r| {
-                                r.event_type == "spec_question_resolved"
-                                    && r.payload_json.get("question_id").and_then(|v| v.as_str())
-                                        == Some(qid)
-                            })
+    let is_spec_review_question = is_spec_review_question_id(question_id);
+    if is_spec_review_question {
+        let events_after = store.list_events(run_id)?;
+        let has_spec_approval = events_after
+            .iter()
+            .any(|ev| ev.event_type == "spec_approved");
+        let has_open_spec_questions = events_after.iter().any(|ev| {
+            ev.event_type == "spec_question_opened"
+                && ev
+                    .payload_json
+                    .get("question_id")
+                    .and_then(|v| v.as_str())
+                    .map(|qid| {
+                        !events_after.iter().any(|r| {
+                            r.event_type == "spec_question_resolved"
+                                && r.payload_json.get("question_id").and_then(|v| v.as_str())
+                                    == Some(qid)
                         })
-                        .unwrap_or(false)
-            });
-            if !has_spec_approval && !has_open_spec_questions {
-                append_event(
-                    &store,
-                    run_id,
-                    &NewEvent::simple(
-                        "spec_approved",
-                        json!({"approved": true, "source": "human_clarification"}),
-                    ),
-                    None,
-                )?;
-            }
+                    })
+                    .unwrap_or(false)
+        });
+        if !has_spec_approval && !has_open_spec_questions {
+            append_event(
+                &store,
+                run_id,
+                &NewEvent::simple(
+                    "spec_approved",
+                    json!({"approved": true, "source": "human_clarification"}),
+                ),
+                None,
+            )?;
         }
     }
     append_event(
@@ -652,7 +610,7 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
     let run = store
         .get_run(run_id)?
         .ok_or_else(|| anyhow!("run not found: {run_id}"))?;
-    let cfg: RunConfig = serde_json::from_value(run.config_json.clone())?;
+    let mut cfg: RunConfig = serde_json::from_value(run.config_json.clone())?;
     let plan_path = PathBuf::from(&run.plan_path);
     let repo_root = repo_root_for_plan(&plan_path)?;
 
@@ -679,6 +637,9 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
     }
 
     if !state.spec_approved {
+        refresh_agent_command_before_initial_translation(
+            store, run_id, &repo_root, &events, &mut cfg,
+        )?;
         rerun_spec_gate_on_resume(store, run_id, &run, &cfg, &repo_root, log.as_deref())?;
         let events_after_spec = store.list_events(run_id)?;
         let state_after_spec = RunProjection::replay(&events_after_spec);
@@ -702,14 +663,7 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
     let state = RunProjection::replay(&events);
 
     if !state.checks_approved {
-        resolve_checks_configuration_on_resume(
-            store,
-            run_id,
-            &cfg,
-            &repo_root,
-            &run,
-            log.as_deref(),
-        )?;
+        resolve_checks_configuration_on_resume(store, run_id, &cfg, log.as_deref())?;
         let events_after_gate = store.list_events(run_id)?;
         let state_after_gate = RunProjection::replay(&events_after_gate);
         if !state_after_gate.open_questions.is_empty() {
@@ -757,6 +711,30 @@ fn continue_run(store: &EventStore, run_id: &str, log: Option<PathBuf>) -> Resul
     }
 
     println!("Run {run_id} finished with {outcome}");
+    Ok(())
+}
+
+fn refresh_agent_command_before_initial_translation(
+    store: &EventStore,
+    run_id: &str,
+    repo_root: &Path,
+    events: &[EventRow],
+    cfg: &mut RunConfig,
+) -> Result<()> {
+    let already_translated = events.iter().any(|ev| ev.event_type == "plan_translated");
+    if already_translated {
+        return Ok(());
+    }
+
+    let latest = crate::config::load_repo_config(repo_root)?
+        .and_then(|repo| repo.agent)
+        .and_then(|agent| agent.command);
+    if latest == cfg.agent_command {
+        return Ok(());
+    }
+
+    cfg.agent_command = latest;
+    store.update_run_config(run_id, &serde_json::to_value(cfg)?)?;
     Ok(())
 }
 
@@ -885,43 +863,20 @@ fn resolve_checks_configuration(
     store: &EventStore,
     run_id: &str,
     cfg: &RunConfig,
-    input: &ChecksResolutionInput<'_>,
+    ndjson_log: Option<&Path>,
 ) -> Result<()> {
-    if cfg.checks_from_cli {
-        append_event(
-            store,
-            run_id,
-            &NewEvent::simple(
-                "checks_approved",
-                json!({"commands": cfg.checks, "source": "cli"}),
-            ),
-            input.ndjson_log,
-        )?;
-        return Ok(());
-    }
-
-    if cfg.use_checks_file && !cfg.reconfigure_checks {
-        match crate::checks::config::load_checks_file(input.repo_root) {
-            Ok(Some(file_checks)) => {
-                append_event(
-                    store,
-                    run_id,
-                    &NewEvent::simple(
-                        "checks_approved",
-                        json!({"commands": file_checks, "source": "file"}),
-                    ),
-                    input.ndjson_log,
-                )?;
-                return Ok(());
-            }
-            Ok(None) => {}
-            Err(err) => {
-                eprintln!("Ignoring invalid checks file and entering checks gate: {err}");
-            }
-        }
-    }
-
-    propose_checks_and_pause(store, run_id, cfg, input)
+    ensure_checks_configured(&cfg.checks)?;
+    let source = if cfg.checks_from_cli { "cli" } else { "config" };
+    append_event(
+        store,
+        run_id,
+        &NewEvent::simple(
+            "checks_approved",
+            json!({"commands": cfg.checks, "source": source}),
+        ),
+        ndjson_log,
+    )?;
+    Ok(())
 }
 
 fn load_or_translate_plan_for_run(
@@ -1114,56 +1069,24 @@ fn resolve_checks_configuration_on_resume(
     store: &EventStore,
     run_id: &str,
     cfg: &RunConfig,
-    repo_root: &Path,
-    run: &RunRow,
     ndjson_log: Option<&Path>,
 ) -> Result<()> {
-    if cfg.checks_from_cli {
-        append_event(
-            store,
-            run_id,
-            &NewEvent::simple(
-                "checks_approved",
-                json!({"commands": cfg.checks, "source": "cli_resume"}),
-            ),
-            ndjson_log,
-        )?;
-        return Ok(());
-    }
-
-    if cfg.use_checks_file && !cfg.reconfigure_checks {
-        match crate::checks::config::load_checks_file(repo_root) {
-            Ok(Some(file_checks)) => {
-                append_event(
-                    store,
-                    run_id,
-                    &NewEvent::simple(
-                        "checks_approved",
-                        json!({"commands": file_checks, "source": "file_resume"}),
-                    ),
-                    ndjson_log,
-                )?;
-                return Ok(());
-            }
-            Ok(None) => {}
-            Err(err) => {
-                eprintln!("Ignoring invalid checks file and entering checks gate: {err}");
-            }
-        }
-    }
-
-    let run_dir = run_artifact_dir(repo_root, run_id);
-    let markdown = read_spec_markdown(&run_dir, Path::new(&run.plan_path))?;
-    let translated = translator::load_translated_plan(&translated_plan_path(&run_dir))
-        .context("load translated plan for checks proposal on resume")?;
-    let checks_input = ChecksResolutionInput {
-        repo_root,
-        plan_file: Path::new(&run.plan_path),
-        markdown: &markdown,
-        translated: &translated,
-        ndjson_log,
+    ensure_checks_configured(&cfg.checks)?;
+    let source = if cfg.checks_from_cli {
+        "cli_resume"
+    } else {
+        "config_resume"
     };
-    propose_checks_and_pause(store, run_id, cfg, &checks_input)
+    append_event(
+        store,
+        run_id,
+        &NewEvent::simple(
+            "checks_approved",
+            json!({"commands": cfg.checks, "source": source}),
+        ),
+        ndjson_log,
+    )?;
+    Ok(())
 }
 
 fn regenerate_plan_spl_if_missing(
@@ -1206,110 +1129,8 @@ fn ensure_tasks_registered_on_resume(
     Ok(())
 }
 
-fn propose_checks_and_pause(
-    store: &EventStore,
-    run_id: &str,
-    cfg: &RunConfig,
-    input: &ChecksResolutionInput<'_>,
-) -> Result<()> {
-    let provider = provider_for(&cfg.agent, &cfg.agent_cmd)?;
-    let prompt = packet::build_checks_proposer_prompt(
-        input.repo_root,
-        input.plan_file,
-        input.markdown,
-        input.translated,
-        read_optional_file(&input.repo_root.join("AGENTS.md")),
-        read_optional_file(&input.repo_root.join("CLAUDE.md")),
-    );
-
-    let worktree = run_artifact_dir(input.repo_root, run_id)
-        .join("checks-proposal")
-        .join("attempt1");
-    fs::create_dir_all(&worktree)?;
-    let res = provider.run(AgentRequest {
-        role: "checks-proposer".to_string(),
-        task_id: "__checks__".to_string(),
-        attempt: 1,
-        worktree_path: worktree,
-        prompt,
-        env: Vec::new(),
-        timeout: Duration::from_secs(10 * 60),
-    })?;
-    let proposed = res
-        .structured_output
-        .as_ref()
-        .and_then(|v| v.get("commands"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(ToString::to_string))
-                .filter(|s| !s.trim().is_empty())
-                .collect::<Vec<_>>()
-        })
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(default_checks);
-
-    append_event(
-        store,
-        run_id,
-        &NewEvent::simple(
-            "checks_proposed",
-            json!({"commands": proposed, "source": "agent_proposal"}),
-        ),
-        input.ndjson_log,
-    )?;
-
-    let qid = "checks-q-1";
-    append_event(
-        store,
-        run_id,
-        &NewEvent::simple(
-            "checks_question_opened",
-            json!({
-                "question_id": qid,
-                "question": "Approve proposed checks?",
-                "proposed_commands": proposed
-            }),
-        ),
-        input.ndjson_log,
-    )?;
-
-    eprintln!("Proposed checks:");
-    for (i, cmd) in proposed.iter().enumerate() {
-        eprintln!("  {}. {}", i + 1, cmd);
-    }
-    pause_for_question(store, run_id, qid, input.ndjson_log)?;
-    bail!("run paused awaiting checks approval")
-}
-
 fn read_optional_file(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
-}
-
-fn proposed_checks_for_question(events: &[EventRow], question_id: &str) -> Result<Vec<String>> {
-    let ev = events
-        .iter()
-        .rev()
-        .find(|ev| {
-            ev.event_type == "checks_question_opened"
-                && ev.payload_json.get("question_id").and_then(|v| v.as_str()) == Some(question_id)
-        })
-        .ok_or_else(|| anyhow!("no checks proposal found for question {question_id}"))?;
-
-    let checks = ev
-        .payload_json
-        .get("proposed_commands")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(ToString::to_string))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    if checks.is_empty() {
-        bail!("question {question_id} has no proposed checks")
-    }
-    Ok(checks)
 }
 
 fn repo_root_for_plan(plan_file: &Path) -> Result<PathBuf> {
@@ -1332,6 +1153,16 @@ pub(crate) fn parse_checks(raw: Option<&str>) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect::<Vec<_>>()
+}
+
+fn ensure_checks_configured(commands: &[String]) -> Result<()> {
+    if commands.is_empty() {
+        bail!(NO_CHECKS_CONFIGURED_ERROR);
+    }
+    if commands.iter().any(|c| c.trim().is_empty()) {
+        bail!(NO_CHECKS_CONFIGURED_ERROR);
+    }
+    Ok(())
 }
 
 pub(crate) fn run_artifact_dir(base: &Path, run_id: &str) -> PathBuf {

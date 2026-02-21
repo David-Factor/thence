@@ -1,6 +1,5 @@
 use crate::events::EventRow;
 use crate::events::projector::{RunProjection, TaskProjection};
-use crate::plan::translator::TranslatedPlan;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -60,27 +59,6 @@ pub fn build_plan_translator_prompt(
     payload.to_string()
 }
 
-pub fn build_checks_proposer_prompt(
-    repo_root: &Path,
-    plan_file: &Path,
-    markdown: &str,
-    translated: &TranslatedPlan,
-    agents_md: Option<String>,
-    claude_md: Option<String>,
-) -> String {
-    let payload = json!({
-        "role": "checks-proposer",
-        "instruction": "Propose objective, deterministic check commands for this repo. Output JSON with key 'commands' as non-empty list of shell commands.",
-        "repo_root": repo_root,
-        "plan_file": plan_file,
-        "plan_excerpt": markdown.lines().take(80).collect::<Vec<_>>().join("\n"),
-        "task_ids": translated.tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
-        "agents_md": agents_md,
-        "claude_md": claude_md
-    });
-    payload.to_string()
-}
-
 pub fn build_implementer_prompt(
     run: &RunProjection,
     events: &[EventRow],
@@ -112,12 +90,14 @@ pub fn build_reviewer_prompt(
     attempt: i64,
     run_checks: &[String],
     submission_refs: serde_json::Value,
+    reviewer_instruction: &str,
 ) -> String {
     let findings = unresolved_findings(events, &task.id);
     let artifact_refs = artifact_refs(events, &task.id, attempt);
 
     json!({
         "role": "reviewer",
+        "instruction": reviewer_instruction,
         "task_id": task.id,
         "attempt": attempt,
         "objective": task.objective,

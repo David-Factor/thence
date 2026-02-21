@@ -23,7 +23,11 @@ pub struct LoopInput {
 }
 
 pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<String> {
-    let provider = provider_for(&input.cfg.agent, &input.cfg.agent_cmd)?;
+    let provider = provider_for(
+        &input.cfg.agent,
+        input.cfg.simulate,
+        input.cfg.agent_command.as_deref(),
+    )?;
 
     loop {
         let events = store.list_events(&input.run_id)?;
@@ -224,6 +228,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 attempt,
                 &projected.checks_commands,
                 submission_refs,
+                input.cfg.effective_reviewer_instruction(),
             ));
             let reviewer_capsule = json!({
                 "capsule_version": 1,
@@ -266,6 +271,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                     worktree_path: worktree.clone(),
                     prompt: json!({
                         "role": "reviewer",
+                        "instruction": input.cfg.effective_reviewer_instruction(),
                         "capsule_file": reviewer_capsule_file,
                         "critical": {
                             "task_id": task_id,

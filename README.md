@@ -1,52 +1,22 @@
 # thence
 
-`thence` is an experiment in long-horizon, spec-driven coding supervision.
+`thence` is a spec-driven supervisor for long-horizon coding runs.
 
-It is a derivative of [hence](https://codeberg.org/anuna/hence), building on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and the broader direction of defeasible logic + LLM workflows pioneered by [Hugo O'Connor](https://www.anuna.io/).
-
-## What You Need
-
-- A repo with a markdown spec (`spec.md`)
-- A coding agent command (for real implementation/review work)
-- Optional prompt context files: `AGENTS.md`, `CLAUDE.md`
-
-Notes:
-
-- Built-in providers are `codex`, `claude`, and `opencode`.
-- Without a configured agent command, provider behavior is stubbed (useful for testing, not real coding output).
+It is derived from [hence](https://codeberg.org/anuna/hence), and builds on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and Hugo O'Connor's work on defeasible logic workflows.
 
 ## Why This Exists
 
-This project comes from a workflow shift:
+Specs, implementation, review, and deterministic checks usually fail for process reasons, not model capability alone. `thence` makes that loop explicit and resumable.
 
-- Models are increasingly good at implementation when each step is grounded and verified.
-- The bottleneck often shifts from coding alone to spec quality and verification quality.
-- Verification is usually hybrid: LLM review plus deterministic checks.
-- `thence` is an outer-loop experiment for this pattern.
+## Setup
 
-## Mental Model
+Prerequisites:
 
-```text
-spec.md
-  |
-  v
-thence run
-  |
-  +--> plan translation (internal)
-  |
-  +--> implementer -> reviewer -> checks
-  |         ^            |
-  |         |            +-- findings/retry loop
-  |
-  +--> merge-queue decision (logical events)
-  |
-  v
-event log + artifacts (.thence/runs/<run-id>/...)
-```
+- A repo with a markdown spec file
+- Rust toolchain (for building from source) or the install script
+- Codex CLI available in `PATH` for real runs
 
-You interact via specs + CLI; planning logic and policy reasoning run under the hood.
-
-## Install
+Install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/David-Factor/thence/main/install.sh | bash
@@ -61,23 +31,25 @@ thence --help
 
 ## How To Run
 
-1. Write a spec file.
-
-```markdown
-# Feature: OCR harness validation loop
-
-Build a harness that validates OCR extraction quality against expected fixtures.
-Add deterministic checks for pass/fail thresholds.
-Add docs showing how to run the harness against new OCR changes.
-```
-
-2. Run thence.
+Real run:
 
 ```bash
-thence run spec.md --agent codex --agent-cmd "./scripts/agent-codex.sh" --checks "cargo check;cargo test"
+thence run spec.md --checks "cargo check;cargo test"
 ```
 
-3. If paused, answer and resume.
+Config-first run:
+
+```bash
+thence run spec.md
+```
+
+Explicit simulation mode:
+
+```bash
+thence run spec.md --simulate --checks "true"
+```
+
+When paused:
 
 ```bash
 thence questions --run <run-id>
@@ -85,86 +57,67 @@ thence answer --run <run-id> --question <question-id> --text "..."
 thence resume --run <run-id>
 ```
 
-4. Inspect current state.
+## Minimal Config
 
-```bash
-thence inspect --run <run-id>
+Create `.thence/config.toml`:
+
+```toml
+version = 1
+
+[agent]
+provider = "codex"
+# optional; defaults to `codex` from PATH
+command = "codex"
+
+[checks]
+commands = ["cargo check", "cargo test"]
+
+[prompts]
+# optional reviewer instruction override
+reviewer = """
+Review implementation against objective/acceptance.
+Return strict JSON with: approved (bool), findings (string[]).
+"""
 ```
-
-## Configuration That Matters
 
 Checks resolution order:
 
-1. `--checks` CLI value
-2. `.thence/checks.json`
-3. Checks proposal gate (run pauses for approval)
+1. `--checks`
+2. `[checks].commands` in `.thence/config.toml`
 
-High-impact flags:
+If neither is set, run start fails.
 
-- `--checks "cmd1;cmd2"`
-- `--reconfigure-checks`
-- `--no-checks-file`
-- `--workers <n>`
-- `--reviewers <n>`
-- `--attempt-timeout-secs <secs>`
-- `--state-db <path>`
-- `--log <path>`
-- `--trust-plan-checks`
-- `--allow-partial-completion`
+## Context Model
 
-Agent command config:
+Per run:
 
-- Per-run: `--agent-cmd`, `--agent-cmd-codex`, `--agent-cmd-claude`, `--agent-cmd-opencode`
-- Env vars: `THENCE_AGENT_CMD`, `THENCE_AGENT_CMD_CODEX`, `THENCE_AGENT_CMD_CLAUDE`, `THENCE_AGENT_CMD_OPENCODE`
+- Frozen spec path: `<repo>/.thence/runs/<run-id>/spec.md`
+- Capsules carry `spec_ref` with:
+  - `path` to the frozen spec
+  - `sha256` of the frozen spec
 
-## How Context Is Shared Today
+This keeps task-level prompts compact while preserving a stable full-spec reference.
 
-- The spec is frozen per run at: `<repo>/.thence/runs/<run-id>/spec.md`
-- Plan translation gets full spec markdown plus optional `AGENTS.md` / `CLAUDE.md` content
-- Implementer/reviewer get task-scoped context through per-attempt capsules (objective, acceptance, findings, checks, references)
-- Capsules include `spec_ref` with full-spec path and SHA-256 for deterministic reference
-- Capsule path is passed via `THENCE_CAPSULE_FILE`
+## Worktrees
 
-Important current behavior:
+Per attempt worktrees are created at:
 
-- The full spec is referenced via filesystem path, not inlined by default.
-- Task execution context remains intentionally task-scoped; agents can read full spec when needed.
+- `<repo>/.thence/runs/<run-id>/worktrees/thence/<task-id>/v<attempt>/<worker-id>`
 
-## Worktrees and Merge Behavior
+Worktrees are retained for debugging/audit and are not auto-cleaned in this release.
 
-Worktrees:
-
-- Per-attempt worktrees are created under:
-  - `<repo>/.thence/runs/<run-id>/worktrees/thence/<task-id>/v<attempt>/<worker-id>`
-- Worktrees are currently retained for audit/debug; automatic cleanup is not implemented yet.
-
-Merge behavior:
-
-- thence emits logical merge-queue events (`merge_succeeded`, `merge_conflict`) and only closes tasks after merge success.
-- Current merge behavior is lightweight/simulated in code, not a full VCS merge queue implementation.
-
-Manual cleanup (if needed):
+Manual cleanup:
 
 ```bash
 rm -rf .thence/runs/<run-id>/worktrees
 ```
 
-## CLI Discovery
-
-- `thence --help`
-- `thence <command> --help`
-- `thence completion <shell>`
-- `thence man --output docs/thence.1`
-
-This help style is intentionally aligned with [CLIG](https://clig.dev/): concise defaults, command-specific examples, and discoverable support paths.
-
 ## Roadmap
 
-- Richer policy/rules for more expressive dependency and parallel execution semantics
-- Hooks at key lifecycle points (attempt start/end, checks, merge outcomes)
-- Optional full-spec embedding/summarization strategies per role
-- Real merge queue integration
-- Automatic run/worktree garbage collection policies
+- Richer rules/policy modeling
+- Better parallelism controls
+- Lifecycle hooks
+- Merge queue integration
 
 ## License
 

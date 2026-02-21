@@ -1,5 +1,5 @@
 use crate::workers::provider::{AgentProvider, AgentRequest, AgentResult};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::fs;
 use std::io::Read;
@@ -7,26 +7,38 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const CODEX_SETUP_ERROR: &str = "Non-simulated runs require a runnable codex command. Install codex or set `[agent].command` in `.thence/config.toml`.";
+
+#[derive(Debug)]
 pub struct CodexProvider {
-    provider_name: String,
-    cmd_override: Option<String>,
+    simulate: bool,
+    command: Option<String>,
 }
 
 impl CodexProvider {
-    pub fn new(provider_name: &str, cmd_override: Option<String>) -> Self {
-        Self {
-            provider_name: provider_name.to_string(),
-            cmd_override,
-        }
+    pub fn new(simulate: bool, command: Option<&str>) -> Result<Self> {
+        let resolved = if simulate {
+            None
+        } else {
+            Some(resolve_agent_cmd(command)?)
+        };
+        Ok(Self {
+            simulate,
+            command: resolved,
+        })
     }
 }
 
 impl AgentProvider for CodexProvider {
     fn run(&self, req: AgentRequest) -> Result<AgentResult> {
-        if let Some(cmd) = resolve_agent_cmd(&self.provider_name, self.cmd_override.as_deref()) {
-            return run_subprocess_agent(&cmd, &self.provider_name, req);
+        if self.simulate {
+            return run_stub_agent("codex", req);
         }
-        run_stub_agent(&self.provider_name, req)
+        let cmd = self
+            .command
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!(CODEX_SETUP_ERROR))?;
+        run_subprocess_agent(cmd, "codex", req)
     }
 }
 
@@ -187,14 +199,33 @@ fn run_subprocess_agent(cmd: &str, provider_name: &str, req: AgentRequest) -> Re
     })
 }
 
-fn resolve_agent_cmd(provider_name: &str, override_cmd: Option<&str>) -> Option<String> {
-    let provider_key = format!("THENCE_AGENT_CMD_{}", provider_name.to_ascii_uppercase());
-    override_cmd
-        .map(str::to_string)
-        .or_else(|| std::env::var(&provider_key).ok())
-        .or_else(|| std::env::var("THENCE_AGENT_CMD").ok())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
+fn resolve_agent_cmd(command: Option<&str>) -> Result<String> {
+    let cmd = command.unwrap_or("codex").trim().to_string();
+    if cmd.is_empty() {
+        bail!(CODEX_SETUP_ERROR);
+    }
+
+    let executable = cmd.split_whitespace().next().unwrap_or("");
+    if executable.is_empty() || !is_runnable(executable) {
+        bail!(CODEX_SETUP_ERROR);
+    }
+    Ok(cmd)
+}
+
+fn is_runnable(executable: &str) -> bool {
+    let quoted = shell_quote(executable);
+    match Command::new("sh")
+        .arg("-lc")
+        .arg(format!("command -v {quoted} >/dev/null 2>&1"))
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+fn shell_quote(raw: &str) -> String {
+    format!("'{}'", raw.replace('\'', "'\"'\"'"))
 }
 
 fn stub_plan_translation(prompt: &str) -> Result<serde_json::Value> {
@@ -221,4 +252,22 @@ fn stub_plan_translation(prompt: &str) -> Result<serde_json::Value> {
         "spl": translated.spl,
         "tasks": translated.tasks
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simulate_mode_allows_stub_without_command() {
+        let provider = CodexProvider::new(true, None);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn non_simulated_mode_requires_runnable_command() {
+        let err = CodexProvider::new(false, Some("this-command-does-not-exist-xyz"));
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Install codex or set `[agent].command`"));
+    }
 }

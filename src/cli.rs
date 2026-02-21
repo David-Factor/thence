@@ -38,8 +38,7 @@ enum Commands {
     #[command(after_long_help = "Examples:
   thence run spec.md
   thence run spec.md --agent codex --checks \"cargo check;cargo test\"
-  thence run spec.md --reconfigure-checks
-  thence run spec.md --agent-cmd \"./scripts/agent-codex.sh\"")]
+  thence run spec.md --simulate")]
     Run {
         #[arg(value_name = "PLAN_FILE", help = "Path to markdown spec file")]
         plan_file: PathBuf,
@@ -47,8 +46,7 @@ enum Commands {
             long,
             default_value = "codex",
             value_name = "PROVIDER",
-            value_parser = ["codex", "claude", "opencode"],
-            help = "Agent provider to use"
+            help = "Agent provider to use (only codex is supported in this version)"
         )]
         agent: String,
         #[arg(
@@ -71,13 +69,8 @@ enum Commands {
             help = "Semicolon-separated checks commands (e.g. \"cargo check;cargo test\")"
         )]
         checks: Option<String>,
-        #[arg(
-            long,
-            help = "Force checks proposal/approval even if .thence/checks.json exists"
-        )]
-        reconfigure_checks: bool,
-        #[arg(long, help = "Ignore .thence/checks.json for this run")]
-        no_checks_file: bool,
+        #[arg(long, help = "Run with stubbed/simulated agent behavior")]
+        simulate: bool,
         #[arg(long, value_name = "PATH", help = "Write NDJSON event log to file")]
         log: Option<PathBuf>,
         #[arg(
@@ -118,30 +111,6 @@ enum Commands {
             help = "Write translated SPL plan to this file for debugging"
         )]
         debug_dump_spl: Option<PathBuf>,
-        #[arg(
-            long,
-            value_name = "CMD",
-            help = "Default agent subprocess command for all providers"
-        )]
-        agent_cmd: Option<String>,
-        #[arg(
-            long,
-            value_name = "CMD",
-            help = "Agent subprocess command override for codex provider"
-        )]
-        agent_cmd_codex: Option<String>,
-        #[arg(
-            long,
-            value_name = "CMD",
-            help = "Agent subprocess command override for claude provider"
-        )]
-        agent_cmd_claude: Option<String>,
-        #[arg(
-            long,
-            value_name = "CMD",
-            help = "Agent subprocess command override for opencode provider"
-        )]
-        agent_cmd_opencode: Option<String>,
     },
     #[command(about = "List unresolved questions for a run")]
     #[command(arg_required_else_help = true)]
@@ -242,8 +211,7 @@ pub fn run() -> Result<()> {
             workers,
             reviewers,
             checks,
-            reconfigure_checks,
-            no_checks_file,
+            simulate,
             log,
             resume,
             run_id,
@@ -253,10 +221,6 @@ pub fn run() -> Result<()> {
             interactive,
             attempt_timeout_secs,
             debug_dump_spl,
-            agent_cmd,
-            agent_cmd_codex,
-            agent_cmd_claude,
-            agent_cmd_opencode,
         } => {
             let cfg = run::RunCommand {
                 plan_file,
@@ -264,8 +228,7 @@ pub fn run() -> Result<()> {
                 workers,
                 reviewers,
                 checks,
-                reconfigure_checks,
-                no_checks_file,
+                simulate,
                 log,
                 resume,
                 run_id,
@@ -275,10 +238,6 @@ pub fn run() -> Result<()> {
                 interactive,
                 attempt_timeout_secs,
                 debug_dump_spl,
-                agent_cmd,
-                agent_cmd_codex,
-                agent_cmd_claude,
-                agent_cmd_opencode,
             };
             run::execute_run(cfg)
         }
@@ -320,5 +279,37 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_help_contract_has_simulate_and_no_legacy_flags() {
+        let cmd = Cli::command();
+        let run = cmd
+            .get_subcommands()
+            .find(|sub| sub.get_name() == "run")
+            .expect("run subcommand");
+        let arg_ids = run
+            .get_arguments()
+            .map(|arg| arg.get_id().as_str().to_string())
+            .collect::<Vec<_>>();
+
+        assert!(arg_ids.contains(&"simulate".to_string()));
+        assert!(!arg_ids.contains(&"reconfigure_checks".to_string()));
+        assert!(!arg_ids.contains(&"no_checks_file".to_string()));
+        assert!(!arg_ids.contains(&"agent_cmd".to_string()));
+        assert!(!arg_ids.contains(&"agent_cmd_codex".to_string()));
+        assert!(!arg_ids.contains(&"agent_cmd_claude".to_string()));
+        assert!(!arg_ids.contains(&"agent_cmd_opencode".to_string()));
+    }
+
+    #[test]
+    fn removed_run_flags_are_rejected_by_cli() {
+        assert!(Cli::try_parse_from(["thence", "run", "spec.md", "--reconfigure-checks"]).is_err());
+        assert!(Cli::try_parse_from(["thence", "run", "spec.md", "--agent-cmd", "codex"]).is_err());
     }
 }

@@ -45,3 +45,22 @@ fn attempt_interrupted_clears_claimed_flag() {
     let state = RunProjection::replay(&events);
     assert!(!state.tasks.get("t1").unwrap().claimed);
 }
+
+#[test]
+fn checks_question_events_do_not_open_projected_questions() {
+    let events = vec![EventRow {
+        seq: 1,
+        run_id: "r1".to_string(),
+        ts: "2026-02-20T00:00:00Z".to_string(),
+        event_type: "checks_question_opened".to_string(),
+        task_id: None,
+        actor_role: None,
+        actor_id: None,
+        attempt: None,
+        payload_json: serde_json::json!({"question_id":"checks-q-1","question":"legacy"}),
+        dedupe_key: None,
+    }];
+
+    let state = RunProjection::replay(&events);
+    assert!(state.open_questions.is_empty());
+}

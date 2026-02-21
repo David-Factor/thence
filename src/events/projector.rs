@@ -102,7 +102,7 @@ impl RunProjection {
             }
             "run_paused" | "human_input_requested" => self.paused = true,
             "run_resumed" => self.paused = false,
-            "spec_question_opened" | "checks_question_opened" => {
+            "spec_question_opened" => {
                 if let Some(qid) = ev.payload_json.get("question_id").and_then(|v| v.as_str()) {
                     let q = ev
                         .payload_json
@@ -113,7 +113,7 @@ impl RunProjection {
                     self.open_questions.insert(qid.to_string(), q);
                 }
             }
-            "spec_question_resolved" | "checks_question_resolved" => {
+            "spec_question_resolved" => {
                 if let Some(qid) = ev.payload_json.get("question_id").and_then(|v| v.as_str()) {
                     self.open_questions.remove(qid);
                 }
