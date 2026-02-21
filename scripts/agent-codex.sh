@@ -76,7 +76,7 @@ schema_implementer() {
   "type": "object",
   "required": ["submitted"],
   "properties": {
-    "submitted": {"const": true}
+    "submitted": {"type": "boolean", "const": true}
   },
   "additionalProperties": false
 }
