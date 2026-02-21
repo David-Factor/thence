@@ -15,6 +15,37 @@ Notes:
 - Built-in providers are `codex`, `claude`, and `opencode`.
 - Without a configured agent command, provider behavior is stubbed (useful for testing, not real coding output).
 
+## Why This Exists
+
+This project comes from a workflow shift:
+
+- Models are increasingly good at implementation when each step is grounded and verified.
+- The bottleneck often shifts from coding alone to spec quality and verification quality.
+- Verification is usually hybrid: LLM review plus deterministic checks.
+- `thence` is an outer-loop experiment for this pattern.
+
+## Mental Model
+
+```text
+spec.md
+  |
+  v
+thence run
+  |
+  +--> plan translation (internal)
+  |
+  +--> implementer -> reviewer -> checks
+  |         ^            |
+  |         |            +-- findings/retry loop
+  |
+  +--> merge-queue decision (logical events)
+  |
+  v
+event log + artifacts (.thence/runs/<run-id>/...)
+```
+
+You interact via specs + CLI; planning logic and policy reasoning run under the hood.
+
 ## Install
 
 ```bash
@@ -91,12 +122,13 @@ Agent command config:
 - The spec is frozen per run at: `<repo>/.thence/runs/<run-id>/spec.md`
 - Plan translation gets full spec markdown plus optional `AGENTS.md` / `CLAUDE.md` content
 - Implementer/reviewer get task-scoped context through per-attempt capsules (objective, acceptance, findings, checks, references)
+- Capsules include `spec_ref` with full-spec path and SHA-256 for deterministic reference
 - Capsule path is passed via `THENCE_CAPSULE_FILE`
 
 Important current behavior:
 
-- Implementer/reviewer do not currently get the full spec injected directly as a dedicated prompt field.
-- The full spec is available on disk under run artifacts, but task execution context is intentionally task-scoped.
+- The full spec is referenced via filesystem path, not inlined by default.
+- Task execution context remains intentionally task-scoped; agents can read full spec when needed.
 
 ## Worktrees and Merge Behavior
 
@@ -130,7 +162,7 @@ This help style is intentionally aligned with [CLIG](https://clig.dev/): concise
 
 - Richer policy/rules for more expressive dependency and parallel execution semantics
 - Hooks at key lifecycle points (attempt start/end, checks, merge outcomes)
-- Explicit full-spec reference in implementer/reviewer capsules
+- Optional full-spec embedding/summarization strategies per role
 - Real merge queue integration
 - Automatic run/worktree garbage collection policies
 

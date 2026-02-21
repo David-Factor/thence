@@ -77,12 +77,14 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 attempt,
                 &projected.checks_commands,
             ));
+            let spec_ref = frozen_spec_ref(&input.base_dir, &input.run_id);
             let implementer_capsule = json!({
                 "capsule_version": 1,
                 "role": "implementer",
                 "run_id": input.run_id,
                 "task_id": task_id,
                 "attempt": attempt,
+                "spec_ref": spec_ref,
                 "payload": implementer_payload
             });
             let (implementer_capsule_path, implementer_capsule_sha) = write_capsule(
@@ -109,7 +111,8 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                             "task_id": task_id,
                             "attempt": attempt,
                             "objective": task.objective,
-                            "acceptance": task.acceptance
+                            "acceptance": task.acceptance,
+                            "spec_path": spec_ref["path"]
                         }
                     })
                     .to_string(),
@@ -228,6 +231,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 "run_id": input.run_id,
                 "task_id": task_id,
                 "attempt": attempt,
+                "spec_ref": spec_ref,
                 "payload": reviewer_payload
             });
             let (reviewer_capsule_path, reviewer_capsule_sha) = write_capsule(
@@ -267,7 +271,8 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                             "task_id": task_id,
                             "attempt": attempt,
                             "objective": task.objective,
-                            "acceptance": task.acceptance
+                            "acceptance": task.acceptance,
+                            "spec_path": spec_ref["path"]
                         }
                     })
                     .to_string(),
@@ -756,4 +761,15 @@ fn capsule_env(path: &Path, digest: &str, role: &str) -> Vec<(String, String)> {
         ("THENCE_CAPSULE_SHA256".to_string(), digest.to_string()),
         ("THENCE_CAPSULE_ROLE".to_string(), role.to_string()),
     ]
+}
+
+fn frozen_spec_ref(repo_root: &Path, run_id: &str) -> serde_json::Value {
+    let spec_path = run_artifact_dir(repo_root, run_id).join("spec.md");
+    let spec_sha256 = fs::read_to_string(&spec_path)
+        .ok()
+        .map(|raw| sha256_hex(&raw));
+    json!({
+        "path": spec_path.display().to_string(),
+        "sha256": spec_sha256
+    })
 }
