@@ -2,6 +2,7 @@
 
 ## Breaking Changes
 
+- `.thence/config.toml` now requires `version = 2` (older versions are rejected).
 - Removed run flags:
   - `--reconfigure-checks`
   - `--no-checks-file`
@@ -16,6 +17,9 @@
 
 ## New Runtime Contract
 
+- Worktree provisioning for untracked files is supported via:
+  - `[[worktree.provision.files]]` in `.thence/config.toml`
+  - fields: `from` (absolute path), `to` (relative path), `required` (default `true`), `mode` (`symlink` default, or `copy`)
 - Checks resolution order:
   1. `--checks`
   2. `.thence/config.toml` `[checks].commands`

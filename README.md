@@ -123,7 +123,7 @@ thence resume --run <run-id>
 Create `.thence/config.toml`:
 
 ```toml
-version = 1
+version = 2
 
 [agent]
 provider = "codex"
@@ -170,6 +170,30 @@ Per-attempt worktrees are created at:
 - `<repo>/.thence/runs/<run-id>/worktrees/thence/<task-id>/v<attempt>/<worker-id>`
 
 Worktrees are retained for debugging and audit in this release.
+
+### Worktree Provisioning
+
+You can materialize required untracked files (for example, `.env`) into each task attempt worktree:
+
+```toml
+version = 2
+
+[checks]
+commands = ["cargo test"]
+
+[[worktree.provision.files]]
+from = "/absolute/path/to/source.env"
+to = ".env"
+required = true
+mode = "symlink" # default: symlink; also supports "copy"
+```
+
+Rules:
+
+- `from` must be an absolute path.
+- `to` must be a relative path inside the worktree (no `..` traversal).
+- `required` defaults to `true` (missing source fails the attempt).
+- `mode` defaults to `symlink`; use `copy` for per-worktree file snapshots.
 
 Manual cleanup:
 

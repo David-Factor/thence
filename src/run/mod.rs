@@ -68,6 +68,8 @@ pub struct RunConfig {
     pub reviewer_prompt_override: Option<String>,
     #[serde(default)]
     pub agent_command: Option<String>,
+    #[serde(default)]
+    pub worktree_provision_files: Vec<crate::config::ProvisionedFile>,
 }
 
 impl RunConfig {
@@ -263,6 +265,12 @@ pub fn execute_run(cmd: RunCommand) -> Result<()> {
             .as_ref()
             .and_then(|cfg| cfg.agent.as_ref())
             .and_then(|agent| agent.command.clone()),
+        worktree_provision_files: repo_cfg
+            .as_ref()
+            .and_then(|cfg| cfg.worktree.as_ref())
+            .and_then(|worktree| worktree.provision.as_ref())
+            .map(|provision| provision.files.clone())
+            .unwrap_or_default(),
     };
     ensure_checks_configured(&cfg.checks)?;
 

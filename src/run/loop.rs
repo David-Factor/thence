@@ -47,6 +47,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
         {
             let task = projected.tasks.get(&task_id).expect("task exists");
             let attempt = task.attempts + 1;
+            let worker_id = format!("impl-{}", (attempt as usize % input.cfg.workers) + 1);
 
             append_event(
                 store,
@@ -55,10 +56,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                     event_type: "task_claimed".to_string(),
                     task_id: Some(task_id.clone()),
                     actor_role: Some("implementer".to_string()),
-                    actor_id: Some(format!(
-                        "impl-{}",
-                        (attempt as usize % input.cfg.workers) + 1
-                    )),
+                    actor_id: Some(worker_id.clone()),
                     attempt: Some(attempt),
                     payload_json: json!({"attempt": attempt}),
                     dedupe_key: None,
@@ -66,13 +64,55 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                 input.ndjson_log.as_deref(),
             )?;
 
-            let worktree = vcs::worktree::prepare_worktree(
+            let worktree = match vcs::worktree::prepare_worktree(
                 &input.base_dir,
                 &input.run_id,
                 &task_id,
                 attempt,
-                &format!("impl-{}", (attempt as usize % input.cfg.workers) + 1),
-            )?;
+                &worker_id,
+                &input.cfg.worktree_provision_files,
+            ) {
+                Ok(path) => path,
+                Err(err) => {
+                    let findings = vec![format!("worktree provisioning failed: {err}")];
+                    let reason = findings[0].clone();
+                    append_event(
+                        store,
+                        &input.run_id,
+                        &NewEvent {
+                            event_type: "review_found_issues".to_string(),
+                            task_id: Some(task_id.clone()),
+                            actor_role: Some("supervisor".to_string()),
+                            actor_id: Some("worktree-provisioner".to_string()),
+                            attempt: Some(attempt),
+                            payload_json: json!({
+                                "reason": reason,
+                                "findings": findings,
+                                "source": "worktree_provisioning"
+                            }),
+                            dedupe_key: None,
+                        },
+                        input.ndjson_log.as_deref(),
+                    )?;
+                    if attempt >= input.cfg.max_attempts {
+                        append_event(
+                            store,
+                            &input.run_id,
+                            &NewEvent {
+                                event_type: "task_failed_terminal".to_string(),
+                                task_id: Some(task_id),
+                                actor_role: Some("supervisor".to_string()),
+                                actor_id: Some("supervisor-1".to_string()),
+                                attempt: Some(attempt),
+                                payload_json: json!({"reason": "max attempts reached after worktree provisioning failure"}),
+                                dedupe_key: None,
+                            },
+                            input.ndjson_log.as_deref(),
+                        )?;
+                    }
+                    continue;
+                }
+            };
 
             let implementer_payload = parse_prompt_json(&packet::build_implementer_prompt(
                 &projected,
@@ -145,10 +185,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                     event_type: "work_submitted".to_string(),
                     task_id: Some(task_id.clone()),
                     actor_role: Some("implementer".to_string()),
-                    actor_id: Some(format!(
-                        "impl-{}",
-                        (attempt as usize % input.cfg.workers) + 1
-                    )),
+                    actor_id: Some(worker_id),
                     attempt: Some(attempt),
                     payload_json: json!({
                         "exit_code": implementer_res.exit_code,

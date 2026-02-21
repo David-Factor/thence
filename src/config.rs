@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const CONFIG_RELATIVE_PATH: &str = ".thence/config.toml";
 
@@ -10,6 +10,7 @@ pub struct RepoConfig {
     pub agent: Option<AgentConfig>,
     pub checks: Option<ChecksConfig>,
     pub prompts: Option<PromptsConfig>,
+    pub worktree: Option<WorktreeConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,12 +29,38 @@ pub struct PromptsConfig {
     pub reviewer: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeConfig {
+    pub provision: Option<WorktreeProvisionConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeProvisionConfig {
+    pub files: Vec<ProvisionedFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProvisionedFile {
+    pub from: PathBuf,
+    pub to: PathBuf,
+    pub required: bool,
+    pub mode: ProvisionMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProvisionMode {
+    Symlink,
+    Copy,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct RawRepoConfig {
     version: Option<u32>,
     agent: Option<RawAgentConfig>,
     checks: Option<RawChecksConfig>,
     prompts: Option<RawPromptsConfig>,
+    worktree: Option<RawWorktreeConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +77,24 @@ struct RawChecksConfig {
 #[derive(Debug, Clone, Deserialize)]
 struct RawPromptsConfig {
     reviewer: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawWorktreeConfig {
+    provision: Option<RawWorktreeProvisionConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawWorktreeProvisionConfig {
+    files: Option<Vec<RawProvisionedFile>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawProvisionedFile {
+    from: Option<String>,
+    to: Option<String>,
+    required: Option<bool>,
+    mode: Option<String>,
 }
 
 pub fn repo_config_path(repo_root: &Path) -> PathBuf {
@@ -73,9 +118,9 @@ fn validate_repo_config(raw: RawRepoConfig, path: &Path) -> Result<RepoConfig> {
     let version = raw
         .version
         .ok_or_else(|| anyhow::anyhow!("{} missing required `version`", path.display()))?;
-    if version != 1 {
+    if version != 2 {
         bail!(
-            "{} has unsupported version {version}; expected version = 1",
+            "{} has unsupported version {version}; expected version = 2",
             path.display()
         );
     }
@@ -114,11 +159,17 @@ fn validate_repo_config(raw: RawRepoConfig, path: &Path) -> Result<RepoConfig> {
         reviewer: sanitize_optional(prompts.reviewer),
     });
 
+    let worktree = raw
+        .worktree
+        .map(|worktree| validate_worktree_config(worktree, path))
+        .transpose()?;
+
     Ok(RepoConfig {
         version,
         agent,
         checks,
         prompts,
+        worktree,
     })
 }
 
@@ -136,6 +187,105 @@ fn sanitize_commands(commands: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn validate_worktree_config(raw: RawWorktreeConfig, path: &Path) -> Result<WorktreeConfig> {
+    let provision = raw
+        .provision
+        .map(|provision| validate_worktree_provision_config(provision, path))
+        .transpose()?;
+    Ok(WorktreeConfig { provision })
+}
+
+fn validate_worktree_provision_config(
+    raw: RawWorktreeProvisionConfig,
+    path: &Path,
+) -> Result<WorktreeProvisionConfig> {
+    let mut files = Vec::new();
+    for (idx, file) in raw.files.unwrap_or_default().into_iter().enumerate() {
+        files.push(validate_provisioned_file(file, path, idx)?);
+    }
+    Ok(WorktreeProvisionConfig { files })
+}
+
+fn validate_provisioned_file(
+    raw: RawProvisionedFile,
+    path: &Path,
+    idx: usize,
+) -> Result<ProvisionedFile> {
+    let from_raw = raw
+        .from
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} missing `from` for `[[worktree.provision.files]]` at index {idx}",
+                path.display()
+            )
+        })?;
+    let from = PathBuf::from(from_raw);
+    if !from.is_absolute() {
+        bail!(
+            "{} has non-absolute `from` for `[[worktree.provision.files]]` at index {idx}",
+            path.display()
+        );
+    }
+
+    let to_raw = raw
+        .to
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} missing `to` for `[[worktree.provision.files]]` at index {idx}",
+                path.display()
+            )
+        })?;
+    let to = sanitize_destination_path(&to_raw).with_context(|| {
+        format!(
+            "{} invalid `to` for `[[worktree.provision.files]]` at index {idx}",
+            path.display()
+        )
+    })?;
+
+    let mode = match raw.mode.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        None | Some("symlink") => ProvisionMode::Symlink,
+        Some("copy") => ProvisionMode::Copy,
+        Some(other) => {
+            bail!(
+                "{} has unsupported `mode = \"{}\"` for `[[worktree.provision.files]]` at index {idx}; expected `symlink` or `copy`",
+                path.display(),
+                other
+            )
+        }
+    };
+
+    Ok(ProvisionedFile {
+        from,
+        to,
+        required: raw.required.unwrap_or(true),
+        mode,
+    })
+}
+
+fn sanitize_destination_path(raw: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        bail!("destination path must be relative");
+    }
+    let mut clean = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => clean.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => bail!("destination path must not contain `..`"),
+            Component::RootDir | Component::Prefix(_) => bail!("destination path must be relative"),
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        bail!("destination path is empty");
+    }
+    Ok(clean)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,7 +300,7 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-version = 1
+version = 2
 [checks]
 commands = ["cargo check", "cargo test"]
 "#,
@@ -158,7 +308,7 @@ commands = ["cargo check", "cargo test"]
         .unwrap();
 
         let cfg = load_repo_config(repo).unwrap().unwrap();
-        assert_eq!(cfg.version, 1);
+        assert_eq!(cfg.version, 2);
         assert_eq!(
             cfg.checks.unwrap().commands,
             vec!["cargo check".to_string(), "cargo test".to_string()]
@@ -171,7 +321,7 @@ commands = ["cargo check", "cargo test"]
         let repo = tmp.path();
         let path = repo.join(".thence").join("config.toml");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "version = 2").unwrap();
+        std::fs::write(&path, "version = 1").unwrap();
 
         let err = load_repo_config(repo).unwrap_err();
         assert!(format!("{err}").contains("unsupported version"));
@@ -187,7 +337,7 @@ commands = ["cargo check", "cargo test"]
         std::fs::write(
             &path,
             r#"
-version = 1
+version = 2
 [checks]
 "#,
         )
@@ -198,7 +348,7 @@ version = 1
         std::fs::write(
             &path,
             r#"
-version = 1
+version = 2
 [checks]
 commands = []
 "#,
@@ -217,7 +367,7 @@ commands = []
         std::fs::write(
             &path,
             r#"
-version = 1
+version = 2
 [checks]
 commands = ["cargo test"]
 [prompts]
@@ -232,5 +382,111 @@ reviewer = "Return strict JSON only."
             .and_then(|p| p.reviewer)
             .expect("missing reviewer");
         assert_eq!(reviewer, "Return strict JSON only.");
+    }
+
+    #[test]
+    fn parses_worktree_provisioning_with_defaults() {
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path();
+        let path = repo.join(".thence").join("config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"
+version = 2
+[checks]
+commands = ["cargo test"]
+
+[[worktree.provision.files]]
+from = "/tmp/source.env"
+to = ".env"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_repo_config(repo).unwrap().unwrap();
+        let files = cfg
+            .worktree
+            .and_then(|w| w.provision)
+            .map(|p| p.files)
+            .unwrap_or_default();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].from, PathBuf::from("/tmp/source.env"));
+        assert_eq!(files[0].to, PathBuf::from(".env"));
+        assert!(files[0].required);
+        assert_eq!(files[0].mode, ProvisionMode::Symlink);
+    }
+
+    #[test]
+    fn rejects_relative_worktree_provision_source() {
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path();
+        let path = repo.join(".thence").join("config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"
+version = 2
+[checks]
+commands = ["cargo test"]
+
+[[worktree.provision.files]]
+from = ".env.shared"
+to = ".env"
+"#,
+        )
+        .unwrap();
+
+        let err = load_repo_config(repo).unwrap_err();
+        assert!(format!("{err}").contains("non-absolute `from`"));
+    }
+
+    #[test]
+    fn rejects_escaping_worktree_destination() {
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path();
+        let path = repo.join(".thence").join("config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"
+version = 2
+[checks]
+commands = ["cargo test"]
+
+[[worktree.provision.files]]
+from = "/tmp/source.env"
+to = "../.env"
+"#,
+        )
+        .unwrap();
+
+        let err = load_repo_config(repo).unwrap_err();
+        assert!(format!("{err}").contains("invalid `to`"));
+    }
+
+    #[test]
+    fn rejects_unknown_worktree_provision_mode() {
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path();
+        let path = repo.join(".thence").join("config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"
+version = 2
+[checks]
+commands = ["cargo test"]
+
+[[worktree.provision.files]]
+from = "/tmp/source.env"
+to = ".env"
+mode = "hardlink"
+"#,
+        )
+        .unwrap();
+
+        let err = load_repo_config(repo).unwrap_err();
+        assert!(format!("{err}").contains("unsupported `mode"));
     }
 }

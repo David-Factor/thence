@@ -104,7 +104,7 @@ fn config_only_checks_resolves_without_question_pause() {
     write_repo_config(
         tmp.path(),
         r#"
-version = 1
+version = 2
 [checks]
 commands = ["true"]
 "#,
@@ -153,7 +153,7 @@ fn cli_checks_override_config_checks() {
     write_repo_config(
         tmp.path(),
         r#"
-version = 1
+version = 2
 [checks]
 commands = ["false"]
 "#,
@@ -232,7 +232,7 @@ fn reviewer_prompt_override_is_written_to_reviewer_capsule() {
     write_repo_config(
         tmp.path(),
         r#"
-version = 1
+version = 2
 [checks]
 commands = ["true"]
 [prompts]
@@ -526,7 +526,7 @@ esac
     write_repo_config(
         tmp.path(),
         &format!(
-            "version = 1\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
+            "version = 2\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
             agent_path.display()
         ),
     );
@@ -821,7 +821,7 @@ fn resume_refreshes_agent_command_before_initial_translation() {
     write_repo_config(
         tmp.path(),
         r#"
-version = 1
+version = 2
 [agent]
 provider = "codex"
 command = "missing-codex-command"
@@ -878,7 +878,7 @@ esac
     write_repo_config(
         tmp.path(),
         &format!(
-            "version = 1\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
+            "version = 2\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
             agent_path.display()
         ),
     );
@@ -992,7 +992,7 @@ esac
     write_repo_config(
         tmp.path(),
         &format!(
-            "version = 1\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
+            "version = 2\n[agent]\nprovider = \"codex\"\ncommand = \"bash {}\"\n[checks]\ncommands = [\"true\"]\n",
             agent_path.display()
         ),
     );
@@ -1305,4 +1305,357 @@ fn resume_interrupts_stale_orphan_attempt_lease() {
         .list_events(&run_id)
         .unwrap();
     assert!(events.iter().any(|e| e.event_type == "attempt_interrupted"));
+}
+
+#[test]
+fn worktree_provision_symlink_makes_env_available_to_checks() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    let shared_env = tmp.path().join("shared.env");
+    fs::write(&plan_path, "- [ ] task-a: provision env").unwrap();
+    fs::write(&shared_env, "DB_PATH=/tmp/test.db\n").unwrap();
+    write_repo_config(
+        tmp.path(),
+        &format!(
+            "version = 2\n[checks]\ncommands = [\"test -L .env\", \"grep -q DB_PATH .env\"]\n\n[[worktree.provision.files]]\nfrom = \"{}\"\nto = \".env\"\nrequired = true\nmode = \"symlink\"\n",
+            shared_env.display()
+        ),
+    );
+
+    let run_id = test_run_id("provision-symlink");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: None,
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    let claimed = events
+        .iter()
+        .find(|e| e.event_type == "task_claimed" && e.attempt == Some(1))
+        .expect("missing task_claimed");
+    let task_id = claimed.task_id.as_deref().expect("missing task id");
+    let worker_id = claimed.actor_id.as_deref().expect("missing actor id");
+
+    let env_path = tmp
+        .path()
+        .join(".thence")
+        .join("runs")
+        .join(&run_id)
+        .join("worktrees")
+        .join("thence")
+        .join(task_id)
+        .join("v1")
+        .join(worker_id)
+        .join(".env");
+    assert!(
+        fs::symlink_metadata(&env_path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+}
+
+#[test]
+fn worktree_provision_missing_required_source_fails_attempt() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    let missing = tmp.path().join("missing.env");
+    fs::write(&plan_path, "- [ ] task-a: requires env").unwrap();
+    write_repo_config(
+        tmp.path(),
+        &format!(
+            "version = 2\n[checks]\ncommands = [\"true\"]\n\n[[worktree.provision.files]]\nfrom = \"{}\"\nto = \".env\"\nrequired = true\nmode = \"symlink\"\n",
+            missing.display()
+        ),
+    );
+
+    let run_id = test_run_id("provision-required-missing");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: None,
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    assert!(events.iter().any(|e| e.event_type == "run_failed"));
+    let provisioning_issue = events
+        .iter()
+        .find(|e| {
+            e.event_type == "review_found_issues"
+                && e.payload_json
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    == "worktree_provisioning"
+        })
+        .expect("missing provisioning failure event");
+    assert!(
+        provisioning_issue
+            .payload_json
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("missing required source")
+    );
+}
+
+#[test]
+fn worktree_provision_missing_optional_source_is_skipped() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    let missing = tmp.path().join("missing.env");
+    fs::write(&plan_path, "- [ ] task-a: optional env").unwrap();
+    write_repo_config(
+        tmp.path(),
+        &format!(
+            "version = 2\n[checks]\ncommands = [\"true\"]\n\n[[worktree.provision.files]]\nfrom = \"{}\"\nto = \".env\"\nrequired = false\nmode = \"symlink\"\n",
+            missing.display()
+        ),
+    );
+
+    let run_id = test_run_id("provision-optional-missing");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: None,
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    let claimed = events
+        .iter()
+        .find(|e| e.event_type == "task_claimed" && e.attempt == Some(1))
+        .expect("missing task_claimed");
+    let task_id = claimed.task_id.as_deref().expect("missing task id");
+    let worker_id = claimed.actor_id.as_deref().expect("missing actor id");
+
+    let env_path = tmp
+        .path()
+        .join(".thence")
+        .join("runs")
+        .join(&run_id)
+        .join("worktrees")
+        .join("thence")
+        .join(task_id)
+        .join("v1")
+        .join(worker_id)
+        .join(".env");
+    assert!(!env_path.exists());
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
+}
+
+#[test]
+fn worktree_provision_copy_mode_creates_independent_file() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    let shared_env = tmp.path().join("shared.env");
+    fs::write(&plan_path, "- [ ] task-a: copy env").unwrap();
+    fs::write(&shared_env, "DB_PATH=/tmp/test.db\n").unwrap();
+    write_repo_config(
+        tmp.path(),
+        &format!(
+            "version = 2\n[checks]\ncommands = [\"grep -q DB_PATH .env\"]\n\n[[worktree.provision.files]]\nfrom = \"{}\"\nto = \".env\"\nrequired = true\nmode = \"copy\"\n",
+            shared_env.display()
+        ),
+    );
+
+    let run_id = test_run_id("provision-copy");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: None,
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    let claimed = events
+        .iter()
+        .find(|e| e.event_type == "task_claimed" && e.attempt == Some(1))
+        .expect("missing task_claimed");
+    let task_id = claimed.task_id.as_deref().expect("missing task id");
+    let worker_id = claimed.actor_id.as_deref().expect("missing actor id");
+
+    let env_path = tmp
+        .path()
+        .join(".thence")
+        .join("runs")
+        .join(&run_id)
+        .join("worktrees")
+        .join("thence")
+        .join(task_id)
+        .join("v1")
+        .join(worker_id)
+        .join(".env");
+    assert_eq!(
+        fs::read_to_string(&env_path).unwrap(),
+        "DB_PATH=/tmp/test.db\n"
+    );
+    assert!(
+        !fs::symlink_metadata(&env_path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn worktree_provision_applies_across_attempts() {
+    let tmp = tempdir().unwrap();
+    let plan_path = tmp.path().join("plan.md");
+    let db_path = tmp.path().join("state.db");
+    let shared_env = tmp.path().join("shared.env");
+    fs::write(&plan_path, "- [ ] task-a: needs review rework [needs-fix]").unwrap();
+    fs::write(&shared_env, "DB_PATH=/tmp/test.db\n").unwrap();
+    write_repo_config(
+        tmp.path(),
+        &format!(
+            "version = 2\n[checks]\ncommands = [\"test -L .env\"]\n\n[[worktree.provision.files]]\nfrom = \"{}\"\nto = \".env\"\nrequired = true\nmode = \"symlink\"\n",
+            shared_env.display()
+        ),
+    );
+
+    let run_id = test_run_id("provision-retry");
+    execute_run(RunCommand {
+        plan_file: plan_path,
+        agent: "codex".to_string(),
+        workers: 1,
+        reviewers: 1,
+        checks: None,
+        simulate: true,
+        log: None,
+        resume: false,
+        run_id: Some(run_id.clone()),
+        state_db: Some(db_path.clone()),
+        allow_partial_completion: false,
+        trust_plan_checks: false,
+        interactive: false,
+        attempt_timeout_secs: None,
+        debug_dump_spl: None,
+    })
+    .unwrap();
+
+    let events = EventStore::open(&db_path)
+        .unwrap()
+        .list_events(&run_id)
+        .unwrap();
+    let claimed_v1 = events
+        .iter()
+        .find(|e| e.event_type == "task_claimed" && e.attempt == Some(1))
+        .expect("missing task_claimed attempt 1");
+    let task_id = claimed_v1.task_id.as_deref().expect("missing task id");
+    let worker_v1 = claimed_v1.actor_id.as_deref().expect("missing actor id");
+    let worker_v2 = events
+        .iter()
+        .find(|e| e.event_type == "task_claimed" && e.attempt == Some(2))
+        .and_then(|e| e.actor_id.as_deref())
+        .unwrap_or(worker_v1);
+
+    let v1_env = tmp
+        .path()
+        .join(".thence")
+        .join("runs")
+        .join(&run_id)
+        .join("worktrees")
+        .join("thence")
+        .join(task_id)
+        .join("v1")
+        .join(worker_v1)
+        .join(".env");
+    let v2_env = tmp
+        .path()
+        .join(".thence")
+        .join("runs")
+        .join(&run_id)
+        .join("worktrees")
+        .join("thence")
+        .join(task_id)
+        .join("v2")
+        .join(worker_v2)
+        .join(".env");
+    assert!(
+        fs::symlink_metadata(v1_env)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        fs::symlink_metadata(v2_env)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event_type == "task_claimed" && e.attempt == Some(2))
+    );
+    assert!(events.iter().any(|e| e.event_type == "run_completed"));
 }
