@@ -53,7 +53,7 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-asset="whence-${VERSION}-${target_arch}-${target_os}.tar.gz"
+asset="thence-${VERSION}-${target_arch}-${target_os}.tar.gz"
 url="https://github.com/$OWNER/$REPO/releases/download/${VERSION}/${asset}"
 
 tmpdir="$(mktemp -d)"
@@ -72,9 +72,9 @@ fi
 tar -xzf "$tmpdir/$asset" -C "$tmpdir"
 
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$tmpdir/whence" "$INSTALL_DIR/whence"
+install -m 0755 "$tmpdir/thence" "$INSTALL_DIR/thence"
 
-echo "Installed: $INSTALL_DIR/whence"
+echo "Installed: $INSTALL_DIR/thence"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *)

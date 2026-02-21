@@ -5,7 +5,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-const PLAN_TRANSLATOR_SPL_REFERENCE: &str = r#"SPL QUICK REFERENCE (whence translator subset)
+const PLAN_TRANSLATOR_SPL_REFERENCE: &str = r#"SPL QUICK REFERENCE (thence translator subset)
 
 - Facts: (given atom) or (given (pred arg1 arg2))
 - Strict rule: (always label body head)

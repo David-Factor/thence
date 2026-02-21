@@ -1,4 +1,4 @@
-# REQ-001: Whence Simple Supervisor Runner V1
+# REQ-001: Thence Simple Supervisor Runner V1
 
 ## Overview
 
@@ -17,7 +17,7 @@ The design intentionally chooses:
 The user-facing goal is one command:
 
 ```bash
-whence run <plan-file> --agent <provider> [--log <file>] [--workers N] [--reviewers N]
+thence run <plan-file> --agent <provider> [--log <file>] [--workers N] [--reviewers N]
 ```
 
 The system must enforce that implementation agents cannot self-certify task completion. A reviewer path and objective checks are required before closure.
@@ -49,7 +49,7 @@ The system must enforce that implementation agents cannot self-certify task comp
 ### Primary Command
 
 ```bash
-whence run <plan-file> --agent codex --log run.ndjson
+thence run <plan-file> --agent codex --log run.ndjson
 ```
 
 ### Minimal Flags
@@ -61,7 +61,7 @@ whence run <plan-file> --agent codex --log run.ndjson
 - `--log <path>`: optional NDJSON mirror stream
 - `--resume`: resume existing run state from DB (uses `--run-id` if provided)
 - `--run-id <id>`: explicit run identifier for resume/inspection flows
-- `--state-db <path>`: optional state DB location (default `$XDG_STATE_HOME/whence/state.db`)
+- `--state-db <path>`: optional state DB location (default `$XDG_STATE_HOME/thence/state.db`)
 - `--allow-partial-completion`: do not fail whole run when a task terminal-fails
 - `--trust-plan-checks`: allow check commands declared in generated plan SPL
 - `--interactive`: allow inline question/answer prompts when human input is required
@@ -69,14 +69,14 @@ whence run <plan-file> --agent codex --log run.ndjson
 ### Human Input Commands
 
 ```bash
-whence questions --run <run-id>
-whence answer --run <run-id> --question <question-id> --text "..."
-whence resume --run <run-id>
+thence questions --run <run-id>
+thence answer --run <run-id> --question <question-id> --text "..."
+thence resume --run <run-id>
 ```
 
 ### Pause Behavior
 
-When human input is required, `whence run` appends `run_paused`, prints exact follow-up commands, and exits non-zero (distinct from success).
+When human input is required, `thence run` appends `run_paused`, prints exact follow-up commands, and exits non-zero (distinct from success).
 
 ### User Experience Principles
 
@@ -342,7 +342,7 @@ For each task `<id>`, translator must emit:
 ### Debug-only Support
 
 ```bash
-whence run plan.md --debug-dump-spl /tmp/generated-plan.spl
+thence run plan.md --debug-dump-spl /tmp/generated-plan.spl
 ```
 
 ---
@@ -415,8 +415,8 @@ V1 providers:
 
 ### Branch Naming
 
-- integration: `whence/<plan-id>`
-- task attempt: `whence/<task-id>/v<attempt>/<worker-id>`
+- integration: `thence/<plan-id>`
+- task attempt: `thence/<task-id>/v<attempt>/<worker-id>`
 
 ### Isolation
 
@@ -469,7 +469,7 @@ NDJSON mirror is observability output only, not canonical state.
 
 ### Artifact Storage
 
-Large runtime artifacts (full prompts, transcripts, diffs, stdout/stderr blobs) should be stored on disk under `.whence/runs/<run-id>/artifacts/` (or configured equivalent). Events keep only references.
+Large runtime artifacts (full prompts, transcripts, diffs, stdout/stderr blobs) should be stored on disk under `.thence/runs/<run-id>/artifacts/` (or configured equivalent). Events keep only references.
 
 ---
 

@@ -471,7 +471,7 @@ pub fn run_supervisor_loop(store: &EventStore, input: LoopInput) -> Result<Strin
                         actor_role: Some("supervisor".to_string()),
                         actor_id: Some("merge-queue".to_string()),
                         attempt: Some(attempt),
-                        payload_json: json!({"integration_branch": format!("whence/{}", input.run_id)}),
+                        payload_json: json!({"integration_branch": format!("thence/{}", input.run_id)}),
                         dedupe_key: None,
                     },
                     input.ndjson_log.as_deref(),
@@ -750,10 +750,10 @@ fn write_capsule(
 fn capsule_env(path: &Path, digest: &str, role: &str) -> Vec<(String, String)> {
     vec![
         (
-            "WHENCE_CAPSULE_FILE".to_string(),
+            "THENCE_CAPSULE_FILE".to_string(),
             path.display().to_string(),
         ),
-        ("WHENCE_CAPSULE_SHA256".to_string(), digest.to_string()),
-        ("WHENCE_CAPSULE_ROLE".to_string(), role.to_string()),
+        ("THENCE_CAPSULE_SHA256".to_string(), digest.to_string()),
+        ("THENCE_CAPSULE_ROLE".to_string(), role.to_string()),
     ]
 }

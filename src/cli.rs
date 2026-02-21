@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "whence")]
+#[command(name = "thence")]
 #[command(about = "Simple supervisor runner", long_about = None)]
 struct Cli {
     #[command(subcommand)]

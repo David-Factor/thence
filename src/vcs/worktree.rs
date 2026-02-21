@@ -9,11 +9,11 @@ pub fn prepare_worktree(
     worker_id: &str,
 ) -> Result<PathBuf> {
     let dir = base
-        .join(".whence")
+        .join(".thence")
         .join("runs")
         .join(run_id)
         .join("worktrees")
-        .join(format!("whence/{task_id}/v{attempt}/{worker_id}"));
+        .join(format!("thence/{task_id}/v{attempt}/{worker_id}"));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

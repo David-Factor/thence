@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
-use whence::events::projector::{RunProjection, TaskProjection};
-use whence::policy::spindle_bridge::derive_policy_state;
+use thence::events::projector::{RunProjection, TaskProjection};
+use thence::policy::spindle_bridge::derive_policy_state;
 
 #[test]
 fn policy_marks_basic_task_claimable() {

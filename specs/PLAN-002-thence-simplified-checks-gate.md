@@ -1,18 +1,18 @@
-# PLAN-002: Whence Simplified Checks Gate + Context Packet Alignment
+# PLAN-002: Thence Simplified Checks Gate + Context Packet Alignment
 
 ## Summary
 This plan revises the prior direction to maximize implementation and UX simplicity while preserving trust boundaries and workflow guarantees.
 
 The core pivot is:
 - keep checks bootstrap as a pre-implementation gate phase (not a pseudo-task in the implementation loop)
-- store approved checks in a simple repo-local file (`.whence/checks.json`)
+- store approved checks in a simple repo-local file (`.thence/checks.json`)
 - remove supervisor-native AGENTS/CLAUDE LLM extraction
 - keep and expand context packets so agents receive actionable state (findings, dependency outcomes, checks)
 
 This preserves the existing run model and event sourcing while reducing branching and schema complexity.
 
 ## Goals
-1. Keep the one-command UX (`whence run ...`) intact.
+1. Keep the one-command UX (`thence run ...`) intact.
 2. Preserve strict review/check/merge trust boundaries.
 3. Add a minimal checks configuration gate with human confirmation.
 4. Make agent prompts packet-driven and state-rich.
@@ -25,7 +25,7 @@ This preserves the existing run model and event sourcing while reducing branchin
 
 ## Locked Decisions
 1. Checks bootstrap is a formal phase before the implementation loop.
-2. Checks baseline persistence is file-based: `.whence/checks.json`.
+2. Checks baseline persistence is file-based: `.thence/checks.json`.
 3. Supervisor passes raw `AGENTS.md` / `CLAUDE.md` content to the checks-proposer agent packet when available.
 4. User confirmation is required on first run without known checks and whenever proposal differs from existing baseline.
 5. Context packets are the primary data plane for implementer/reviewer/check proposer.
@@ -46,7 +46,7 @@ This preserves the existing run model and event sourcing while reducing branchin
 ### Phase 1.5: Checks Configuration Gate (new formal phase)
 Checks source precedence:
 1. CLI `--checks` if provided.
-2. `.whence/checks.json` if present and valid.
+2. `.thence/checks.json` if present and valid.
 3. Otherwise run checks-proposer agent and request human confirmation.
 
 Detailed behavior:
@@ -61,7 +61,7 @@ Detailed behavior:
 - emit proposal event.
 - emit checks question + `human_input_requested` + `run_paused`.
 - on answer: either accept proposed list or parse user-edited list.
-- persist accepted checks to `.whence/checks.json`.
+- persist accepted checks to `.thence/checks.json`.
 - emit approved event and `run_resumed`.
 
 ### Phase 2: Implementation Loop (unchanged in shape)
@@ -93,11 +93,11 @@ These are distinct from spec question events.
 
 ### No new SQLite baseline table
 - Do not add `repo_baselines`.
-- Cross-run checks memory lives in `.whence/checks.json`.
+- Cross-run checks memory lives in `.thence/checks.json`.
 - DB remains canonical per-run audit log.
 
-## File Contract: `.whence/checks.json`
-Location: repo root `.whence/checks.json`
+## File Contract: `.thence/checks.json`
+Location: repo root `.thence/checks.json`
 
 Schema:
 ```json
@@ -159,8 +159,8 @@ Fields:
 
 ## Public Interface Changes
 CLI additions:
-1. `--reconfigure-checks`: force checks gate even when `.whence/checks.json` exists.
-2. `--no-checks-file`: ignore `.whence/checks.json` for this run.
+1. `--reconfigure-checks`: force checks gate even when `.thence/checks.json` exists.
+2. `--no-checks-file`: ignore `.thence/checks.json` for this run.
 
 No changes to `questions`, `answer`, `resume` command shapes.
 
@@ -170,7 +170,7 @@ No changes to `questions`, `answer`, `resume` command shapes.
 2. `src/run/mod.rs`
 - add checks gate orchestration before entering implementation loop.
 - add checks question open/resolve handlers in answer flow.
-- load/save `.whence/checks.json`.
+- load/save `.thence/checks.json`.
 3. `src/run/loop.rs`
 - consume run-approved checks and packet builders.
 - replace inline prompt strings with packet-derived prompt bodies.
@@ -183,14 +183,14 @@ No changes to `questions`, `answer`, `resume` command shapes.
 7. `src/policy/spindle_bridge.rs`
 - include checks-approved gate in claimability derivation.
 8. `src/checks/`
-- add file load/save/validation helpers for `.whence/checks.json`.
+- add file load/save/validation helpers for `.thence/checks.json`.
 9. `src/run/packet.rs` (new)
 - implement packet builders for check proposer, implementer, reviewer.
 
 ## Testing Plan
 
 ### Unit tests
-1. `.whence/checks.json` parse/validate success/failure.
+1. `.thence/checks.json` parse/validate success/failure.
 2. checks source precedence logic.
 3. packet builder includes unresolved findings and dependency outcomes.
 4. new transition validation for checks events.
@@ -205,7 +205,7 @@ No changes to `questions`, `answer`, `resume` command shapes.
 
 ## Acceptance Criteria
 1. First run in fresh repo without checks pauses for checks confirmation and then proceeds.
-2. Subsequent runs use `.whence/checks.json` automatically unless overridden.
+2. Subsequent runs use `.thence/checks.json` automatically unless overridden.
 3. Implementation loop receives unresolved review findings in implementer packet.
 4. Supervisor never performs AGENTS/CLAUDE hint extraction itself; hints are passed raw to the checks-proposer agent.
 5. Existing trust boundaries remain intact (implementer cannot self-approve/close; reviewer cannot merge).
@@ -213,7 +213,7 @@ No changes to `questions`, `answer`, `resume` command shapes.
 ## Migration and Backward Compatibility
 1. Existing runs/events remain readable.
 2. New checks events are additive.
-3. If `.whence/checks.json` does not exist, behavior is deterministic (enter checks gate).
+3. If `.thence/checks.json` does not exist, behavior is deterministic (enter checks gate).
 
 ## Defaults
 1. Default checks source: file if present, else gate.

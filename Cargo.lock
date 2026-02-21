@@ -675,6 +675,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "thence"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spindle-core",
+ "spindle-parser",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -836,23 +853,6 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
-]
-
-[[package]]
-name = "whence"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "spindle-core",
- "spindle-parser",
- "tempfile",
- "uuid",
 ]
 
 [[package]]

@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# whence subprocess adapter for Codex CLI.
-# Expected environment from whence provider:
-# - WHENCE_ROLE
-# - WHENCE_WORKTREE
-# - WHENCE_PROMPT_FILE
-# - WHENCE_RESULT_FILE
-# - WHENCE_CAPSULE_FILE (implementer/reviewer attempts)
+# thence subprocess adapter for Codex CLI.
+# Expected environment from thence provider:
+# - THENCE_ROLE
+# - THENCE_WORKTREE
+# - THENCE_PROMPT_FILE
+# - THENCE_RESULT_FILE
+# - THENCE_CAPSULE_FILE (implementer/reviewer attempts)
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "codex not found in PATH" >&2
   exit 127
 fi
 
-ROLE="${WHENCE_ROLE:-}"
-WORK_DIR="${WHENCE_WORKTREE:-$PWD}"
-PROMPT_FILE="${WHENCE_PROMPT_FILE:-}"
-RESULT_FILE="${WHENCE_RESULT_FILE:?missing WHENCE_RESULT_FILE}"
-CAPSULE_FILE="${WHENCE_CAPSULE_FILE:-}"
-SANDBOX_MODE="${WHENCE_CODEX_SANDBOX:-workspace-write}"
+ROLE="${THENCE_ROLE:-}"
+WORK_DIR="${THENCE_WORKTREE:-$PWD}"
+PROMPT_FILE="${THENCE_PROMPT_FILE:-}"
+RESULT_FILE="${THENCE_RESULT_FILE:?missing THENCE_RESULT_FILE}"
+CAPSULE_FILE="${THENCE_CAPSULE_FILE:-}"
+SANDBOX_MODE="${THENCE_CODEX_SANDBOX:-workspace-write}"
 
-TMP_DIR="$(mktemp -d "$WORK_DIR/.whence-agent.XXXXXX")"
+TMP_DIR="$(mktemp -d "$WORK_DIR/.thence-agent.XXXXXX")"
 cleanup() {
   rm -rf "$TMP_DIR"
 }
@@ -125,12 +125,12 @@ build_prompt() {
     echo "$header"
     echo
     if [[ -n "$PROMPT_FILE" && -f "$PROMPT_FILE" ]]; then
-      echo "WHENCE_PROMPT_FILE payload:"
+      echo "THENCE_PROMPT_FILE payload:"
       cat "$PROMPT_FILE"
       echo
     fi
     if [[ -n "$CAPSULE_FILE" && -f "$CAPSULE_FILE" ]]; then
-      echo "WHENCE_CAPSULE_FILE payload:"
+      echo "THENCE_CAPSULE_FILE payload:"
       cat "$CAPSULE_FILE"
       echo
     fi
@@ -146,25 +146,25 @@ main() {
     plan-translator)
       schema_plan_translator "$schema_file"
       build_prompt "$prompt_file" \
-        "You are the whence plan-translator. Return ONLY JSON matching the schema. Produce self-contained SPL with canonical task/depends-on facts and no import directives."
+        "You are the thence plan-translator. Return ONLY JSON matching the schema. Produce self-contained SPL with canonical task/depends-on facts and no import directives."
       ;;
     implementer)
       schema_implementer "$schema_file"
       build_prompt "$prompt_file" \
-        "You are the whence implementer. Make concrete code edits in the current workdir to satisfy objective and acceptance, then return ONLY JSON: {\"submitted\": true}."
+        "You are the thence implementer. Make concrete code edits in the current workdir to satisfy objective and acceptance, then return ONLY JSON: {\"submitted\": true}."
       ;;
     reviewer)
       schema_reviewer "$schema_file"
       build_prompt "$prompt_file" \
-        "You are the whence reviewer. Review implementation against objective/acceptance and return ONLY JSON with approved boolean and concrete findings array."
+        "You are the thence reviewer. Review implementation against objective/acceptance and return ONLY JSON with approved boolean and concrete findings array."
       ;;
     checks-proposer)
       schema_checks_proposer "$schema_file"
       build_prompt "$prompt_file" \
-        "You are the whence checks-proposer. Return ONLY JSON with deterministic command list in commands[] and brief rationale."
+        "You are the thence checks-proposer. Return ONLY JSON with deterministic command list in commands[] and brief rationale."
       ;;
     *)
-      echo "unsupported WHENCE_ROLE='$ROLE'" >&2
+      echo "unsupported THENCE_ROLE='$ROLE'" >&2
       exit 2
       ;;
   esac

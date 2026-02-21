@@ -1,6 +1,6 @@
-# whence
+# thence
 
-`whence` is an experiment in long-horizon, hands-off LLM execution.
+`thence` is an experiment in long-horizon, hands-off LLM execution.
 
 It is explicitly a derivative of [hence](https://codeberg.org/anuna/hence), and directly builds on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and defeasible logic orchestration.
 
@@ -11,13 +11,13 @@ This project comes from a workflow shift:
 - Models are now strong enough to be more hands-off, if each step is grounded and verified.
 - In practice, the hard part is no longer raw coding alone, it is spec quality plus verification quality.
 - The verification loop can vary by project, but usually combines LLM review plus deterministic checks.
-- `whence` is an outer-loop experiment for that pattern: take a rich spec, run execution/review loops, and keep progress grounded.
+- `thence` is an outer-loop experiment for that pattern: take a rich spec, run execution/review loops, and keep progress grounded.
 
 ## Core Idea
 
 You provide a free-form Markdown spec.
 
-`whence` then:
+`thence` then:
 
 1. translates the spec into an internal plan,
 2. runs implementer/reviewer attempts,
@@ -38,7 +38,7 @@ Mental model:
       |
       v
 +------------------------+
-|       whence run       |
+|       thence run       |
 |    (supervisor loop)   |
 +------------------------+
       |
@@ -66,7 +66,7 @@ Mental model:
 
 ## Relationship to hence
 
-`whence` is not trying to replace `hence`.
+`thence` is not trying to replace `hence`.
 
 It is a focused experiment that borrows the reasoning foundation and applies it to a different user experience:
 
@@ -84,13 +84,13 @@ curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh
 
 Defaults:
 
-- installs to `~/.local/bin/whence`
+- installs to `~/.local/bin/thence`
 - installs latest release for your OS/arch
 
 Useful overrides:
 
 ```bash
-VERSION=v0.1.1 curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
+VERSION=v0.1.2 curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
 INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/David-Factor/whence/main/install.sh | bash
 ```
 
@@ -109,7 +109,7 @@ export PATH="$HOME/.local/bin:$PATH"
 Verify install:
 
 ```bash
-whence --help
+thence --help
 ```
 
 ## Quickstart
@@ -129,26 +129,26 @@ Add docs showing how to run the harness against new OCR changes.
 ### 2. Start a run
 
 ```bash
-whence run spec.md --agent codex --checks "cargo check;cargo test"
+thence run spec.md --agent codex --checks "cargo check;cargo test"
 ```
 
 ### 3. Respond to pauses (if any)
 
 ```bash
-whence questions --run <run-id>
-whence answer --run <run-id> --question <question-id> --text "..."
-whence resume --run <run-id>
+thence questions --run <run-id>
+thence answer --run <run-id> --question <question-id> --text "..."
+thence resume --run <run-id>
 ```
 
 ### 4. Inspect status and artifacts
 
 ```bash
-whence inspect --run <run-id>
+thence inspect --run <run-id>
 ```
 
 ## Verification and Grounding Model
 
-`whence` is built around two layers:
+`thence` is built around two layers:
 
 - Inner loop: implementer + reviewer + deterministic checks.
 - Outer loop: event-sourced supervision that tracks progress, findings, retries, and terminal outcomes.
@@ -160,13 +160,13 @@ This is the central experiment: can a strong outer loop make longer-horizon auto
 Checks resolution order:
 
 1. `--checks` CLI value
-2. `.whence/checks.json`
+2. `.thence/checks.json`
 3. checks proposal gate (run pauses for approval)
 
 Crash safety:
 
 - In-flight attempts write lease files under:
-  - `<repo>/.whence/runs/<run-id>/leases/<task-id>/attempt<k>/{implementer,reviewer}.json`
+  - `<repo>/.thence/runs/<run-id>/leases/<task-id>/attempt<k>/{implementer,reviewer}.json`
 - On resume:
   - fresh active lease blocks resume (prevents double supervisors),
   - stale lease gets interrupted and retried safely.
@@ -196,8 +196,8 @@ cargo test
 
 State:
 
-- default DB: `$XDG_STATE_HOME/whence/state.db` (or `$HOME/.local/state/whence/state.db`)
-- artifacts: `<repo>/.whence/runs/<run-id>/`
+- default DB: `$XDG_STATE_HOME/thence/state.db` (or `$HOME/.local/state/thence/state.db`)
+- artifacts: `<repo>/.thence/runs/<run-id>/`
 
 ## License
 

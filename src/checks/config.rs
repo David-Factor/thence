@@ -12,7 +12,7 @@ pub struct ChecksFile {
 }
 
 fn checks_file_path(repo_root: &Path) -> PathBuf {
-    repo_root.join(".whence").join("checks.json")
+    repo_root.join(".thence").join("checks.json")
 }
 
 fn validate(commands: &[String]) -> Result<()> {

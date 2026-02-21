@@ -1,8 +1,8 @@
 use std::fs;
 use tempfile::tempdir;
-use whence::events::NewEvent;
-use whence::events::store::{EventStore, RunRow};
-use whence::run::{RunCommand, answer_question, execute_run, list_questions, resume_run};
+use thence::events::NewEvent;
+use thence::events::store::{EventStore, RunRow};
+use thence::run::{RunCommand, answer_question, execute_run, list_questions, resume_run};
 
 fn test_run_id(prefix: &str) -> String {
     format!("{}-{}", prefix, uuid::Uuid::new_v4())
@@ -329,34 +329,34 @@ fn reviewer_findings_persist_and_reach_next_implementer_attempt() {
         &agent_path,
         r#"#!/usr/bin/env bash
 set -euo pipefail
-case "${WHENCE_ROLE:-}" in
+case "${THENCE_ROLE:-}" in
   plan-translator)
-    cat > "${WHENCE_RESULT_FILE}" <<'JSON'
+    cat > "${THENCE_RESULT_FILE}" <<'JSON'
 {"spl":"(given (task task-a))\n(given (ready task-a))\n","tasks":[{"id":"task-a","objective":"implement feature with rework loop","acceptance":"Complete objective: implement feature with rework loop","dependencies":[],"checks":["true"]}]}
 JSON
     ;;
   implementer)
-    if [ "${WHENCE_ATTEMPT:-1}" = "1" ]; then
-      echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}"
+    if [ "${THENCE_ATTEMPT:-1}" = "1" ]; then
+      echo '{"submitted":true}' > "${THENCE_RESULT_FILE}"
     else
-      if grep -q "must-handle-edge-case" "${WHENCE_CAPSULE_FILE}"; then
-        echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}"
+      if grep -q "must-handle-edge-case" "${THENCE_CAPSULE_FILE}"; then
+        echo '{"submitted":true}' > "${THENCE_RESULT_FILE}"
       else
-        echo '{"submitted":false}' > "${WHENCE_RESULT_FILE}"
+        echo '{"submitted":false}' > "${THENCE_RESULT_FILE}"
       fi
     fi
     ;;
   reviewer)
-    if [ "${WHENCE_ATTEMPT:-1}" = "1" ]; then
-      cat > "${WHENCE_RESULT_FILE}" <<'JSON'
+    if [ "${THENCE_ATTEMPT:-1}" = "1" ]; then
+      cat > "${THENCE_RESULT_FILE}" <<'JSON'
 {"approved":false,"findings":["must-handle-edge-case","add-regression-test"]}
 JSON
     else
-      echo '{"approved":true,"findings":[]}' > "${WHENCE_RESULT_FILE}"
+      echo '{"approved":true,"findings":[]}' > "${THENCE_RESULT_FILE}"
     fi
     ;;
-  checks-proposer) echo '{"commands":["true"],"rationale":"ok"}' > "${WHENCE_RESULT_FILE}" ;;
-  *) echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}" ;;
+  checks-proposer) echo '{"commands":["true"],"rationale":"ok"}' > "${THENCE_RESULT_FILE}" ;;
+  *) echo '{"submitted":true}' > "${THENCE_RESULT_FILE}" ;;
 esac
 "#,
     )
@@ -429,7 +429,7 @@ esac
     let capsule = plan_path
         .parent()
         .unwrap()
-        .join(".whence")
+        .join(".thence")
         .join("runs")
         .join(&run_id)
         .join("capsules")
@@ -582,7 +582,7 @@ fn checks_gate_pauses_then_accept_resume() {
     let checks_file = plan_path
         .parent()
         .unwrap()
-        .join(".whence")
+        .join(".thence")
         .join("checks.json");
     assert!(checks_file.exists());
 }
@@ -681,7 +681,7 @@ fn resume_retranslates_when_translated_plan_missing() {
     let translated_path = plan_path
         .parent()
         .unwrap()
-        .join(".whence")
+        .join(".thence")
         .join("runs")
         .join(&run_id)
         .join("translated_plan.json");
@@ -768,16 +768,16 @@ fn subprocess_invalid_reviewer_output_fails_closed() {
         &agent_path,
         r#"#!/usr/bin/env bash
 set -euo pipefail
-case "${WHENCE_ROLE:-}" in
+case "${THENCE_ROLE:-}" in
   plan-translator)
-    cat > "${WHENCE_RESULT_FILE}" <<'JSON'
+    cat > "${THENCE_RESULT_FILE}" <<'JSON'
 {"spl":"(given (task task-a))\n(given (ready task-a))\n","tasks":[{"id":"task-a","objective":"run reviewer invalid output","acceptance":"Complete objective: run reviewer invalid output","dependencies":[],"checks":["true"]}]}
 JSON
     ;;
-  implementer) echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}" ;;
-  reviewer) echo '{' > "${WHENCE_RESULT_FILE}" ;;
-  checks-proposer) echo '{"commands":["true"],"rationale":"ok"}' > "${WHENCE_RESULT_FILE}" ;;
-  *) echo '{"submitted":true}' > "${WHENCE_RESULT_FILE}" ;;
+  implementer) echo '{"submitted":true}' > "${THENCE_RESULT_FILE}" ;;
+  reviewer) echo '{' > "${THENCE_RESULT_FILE}" ;;
+  checks-proposer) echo '{"commands":["true"],"rationale":"ok"}' > "${THENCE_RESULT_FILE}" ;;
+  *) echo '{"submitted":true}' > "${THENCE_RESULT_FILE}" ;;
 esac
 "#,
     )
@@ -834,7 +834,7 @@ fn resume_blocks_when_orphan_attempt_has_fresh_active_lease() {
     let run_dir = plan_path
         .parent()
         .unwrap()
-        .join(".whence")
+        .join(".thence")
         .join("runs")
         .join(&run_id);
     fs::create_dir_all(&run_dir).unwrap();
@@ -975,7 +975,7 @@ fn resume_interrupts_stale_orphan_attempt_lease() {
     let run_dir = plan_path
         .parent()
         .unwrap()
-        .join(".whence")
+        .join(".thence")
         .join("runs")
         .join(&run_id);
     fs::create_dir_all(&run_dir).unwrap();

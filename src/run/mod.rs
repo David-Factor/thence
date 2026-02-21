@@ -81,16 +81,16 @@ struct ChecksResolutionInput<'a> {
 
 fn default_state_db() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_STATE_HOME") {
-        return PathBuf::from(xdg).join("whence").join("state.db");
+        return PathBuf::from(xdg).join("thence").join("state.db");
     }
     if let Ok(home) = std::env::var("HOME") {
         return PathBuf::from(home)
             .join(".local")
             .join("state")
-            .join("whence")
+            .join("thence")
             .join("state.db");
     }
-    PathBuf::from(".whence/state.db")
+    PathBuf::from(".thence/state.db")
 }
 
 fn default_use_checks_file() -> bool {
@@ -529,7 +529,7 @@ pub fn answer_question(
         None,
     )?;
 
-    println!("Recorded answer for {question_id}. Resume with: whence resume --run {run_id}");
+    println!("Recorded answer for {question_id}. Resume with: thence resume --run {run_id}");
     Ok(())
 }
 
@@ -771,7 +771,7 @@ fn pause_for_question(
         run_id,
         &NewEvent::simple(
             "human_input_requested",
-            json!({"question_id": question_id, "command": format!("whence answer --run {run_id} --question {question_id} --text \"...\"")}),
+            json!({"question_id": question_id, "command": format!("thence answer --run {run_id} --question {question_id} --text \"...\"")}),
         ),
         ndjson_log,
     )?;
@@ -782,18 +782,18 @@ fn pause_for_question(
             "run_paused",
             json!({
                 "next": [
-                    format!("whence questions --run {run_id}"),
-                    format!("whence answer --run {run_id} --question {question_id} --text \"...\""),
-                    format!("whence resume --run {run_id}")
+                    format!("thence questions --run {run_id}"),
+                    format!("thence answer --run {run_id} --question {question_id} --text \"...\""),
+                    format!("thence resume --run {run_id}")
                 ]
             }),
         ),
         ndjson_log,
     )?;
     eprintln!("Run paused. Next commands:");
-    eprintln!("  whence questions --run {run_id}");
-    eprintln!("  whence answer --run {run_id} --question {question_id} --text \"...\"");
-    eprintln!("  whence resume --run {run_id}");
+    eprintln!("  thence questions --run {run_id}");
+    eprintln!("  thence answer --run {run_id} --question {question_id} --text \"...\"");
+    eprintln!("  thence resume --run {run_id}");
     Ok(())
 }
 
@@ -1335,7 +1335,7 @@ pub(crate) fn parse_checks(raw: Option<&str>) -> Vec<String> {
 }
 
 pub(crate) fn run_artifact_dir(base: &Path, run_id: &str) -> PathBuf {
-    base.join(".whence").join("runs").join(run_id)
+    base.join(".thence").join("runs").join(run_id)
 }
 
 fn resolve_resume_run_id(store: &EventStore, explicit: Option<&str>) -> Result<String> {
@@ -1367,7 +1367,7 @@ fn discover_attempt_artifacts(
 ) -> Result<Vec<PathBuf>> {
     let root = run_dir
         .join("worktrees")
-        .join("whence")
+        .join("thence")
         .join(task_id)
         .join(format!("v{attempt}"));
     if !root.exists() {

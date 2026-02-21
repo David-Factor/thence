@@ -20,6 +20,6 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Whence runtime artifacts/state
-.whence/
+# Thence runtime artifacts/state
+.thence/
 .DS_Store

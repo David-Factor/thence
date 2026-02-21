@@ -123,14 +123,14 @@ fn run_subprocess_agent(cmd: &str, provider_name: &str, req: AgentRequest) -> Re
         .arg("-lc")
         .arg(cmd)
         .current_dir(&req.worktree_path)
-        .env("WHENCE_PROVIDER", provider_name)
-        .env("WHENCE_ROLE", &req.role)
-        .env("WHENCE_TASK_ID", &req.task_id)
-        .env("WHENCE_ATTEMPT", req.attempt.to_string())
-        .env("WHENCE_WORKTREE", &req.worktree_path)
-        .env("WHENCE_PROMPT_FILE", &prompt_path)
-        .env("WHENCE_RESULT_FILE", &result_path)
-        .env("WHENCE_TIMEOUT_SECS", req.timeout.as_secs().to_string())
+        .env("THENCE_PROVIDER", provider_name)
+        .env("THENCE_ROLE", &req.role)
+        .env("THENCE_TASK_ID", &req.task_id)
+        .env("THENCE_ATTEMPT", req.attempt.to_string())
+        .env("THENCE_WORKTREE", &req.worktree_path)
+        .env("THENCE_PROMPT_FILE", &prompt_path)
+        .env("THENCE_RESULT_FILE", &result_path)
+        .env("THENCE_TIMEOUT_SECS", req.timeout.as_secs().to_string())
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     for (k, v) in &req.env {
@@ -188,11 +188,11 @@ fn run_subprocess_agent(cmd: &str, provider_name: &str, req: AgentRequest) -> Re
 }
 
 fn resolve_agent_cmd(provider_name: &str, override_cmd: Option<&str>) -> Option<String> {
-    let provider_key = format!("WHENCE_AGENT_CMD_{}", provider_name.to_ascii_uppercase());
+    let provider_key = format!("THENCE_AGENT_CMD_{}", provider_name.to_ascii_uppercase());
     override_cmd
         .map(str::to_string)
         .or_else(|| std::env::var(&provider_key).ok())
-        .or_else(|| std::env::var("WHENCE_AGENT_CMD").ok())
+        .or_else(|| std::env::var("THENCE_AGENT_CMD").ok())
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
