@@ -1,15 +1,15 @@
 # thence
 
-`thence` is an experiment in long-horizon, hands-off LLM execution.
+`thence` is an experiment in long-horizon LLM-assisted execution.
 
-It is explicitly a derivative of [hence](https://codeberg.org/anuna/hence), and directly builds on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and defeasible logic orchestration.
+It is explicitly a derivative of [hence](https://codeberg.org/anuna/hence), and builds on ideas from [spindle-rust](https://codeberg.org/anuna/spindle-rust) and defeasible logic orchestration.
 
 ## Why This Exists
 
 This project comes from a workflow shift:
 
-- Models are now strong enough to be more hands-off, if each step is grounded and verified.
-- In practice, the hard part is no longer raw coding alone, it is spec quality plus verification quality.
+- Models are increasingly good at implementation, if each step is grounded and verified.
+- In practice, the bottleneck often shifts from raw coding to spec quality and verification quality.
 - The verification loop can vary by project, but usually combines LLM review plus deterministic checks.
 - `thence` is an outer-loop experiment for that pattern: take a rich spec, run execution/review loops, and keep progress grounded.
 
@@ -68,7 +68,9 @@ Mental model:
 
 `thence` is not trying to replace `hence`.
 
-It is a focused experiment that borrows the reasoning foundation and applies it to a different user experience:
+It is a focused experiment exploring a few ideas on top of [Hugo O'Connor](https://www.anuna.io/)'s innovative work in `hence` and `spindle-rust`, especially the rich seam of defeasible logic systems paired with LLM workflows.
+
+In practical terms, it applies that foundation to a different user experience:
 
 - no plan language exposure for end users,
 - free-form spec in, supervised execution out,
