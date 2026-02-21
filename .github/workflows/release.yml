@@ -29,7 +29,7 @@ jobs:
             artifact: whence-${{ github.ref_name }}-x86_64-unknown-linux-musl.tar.gz
             bin: whence
             setup: sudo apt-get update && sudo apt-get install -y musl-tools
-          - os: macos-13
+          - os: macos-14
             target: x86_64-apple-darwin
             artifact: whence-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
             bin: whence
@@ -94,4 +94,3 @@ jobs:
           generate_release_notes: true
           files: |
             whence-*.tar.gz
-
